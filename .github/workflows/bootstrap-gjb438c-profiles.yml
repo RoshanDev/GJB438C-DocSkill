@@ -31,6 +31,17 @@ jobs:
           cat .bootstrap-profiles/part-* > /tmp/profile-bootstrap.tar.xz
           echo "c5375dcd636782d63bca1f08332faac3c2a9a521ca07daa7150b714a2fc8120f  /tmp/profile-bootstrap.tar.xz" | sha256sum -c -
           tar -xJf /tmp/profile-bootstrap.tar.xz -C .
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('skills/gjb438c-md-first/gjb438c_suite/profile_catalog.py')
+          text = path.read_text(encoding='utf-8')
+          text = text.replace(
+              '    code = code.upper()\n',
+              '    code = {"STRP": "STrP"}.get(code.upper(), code.upper())\n',
+              1,
+          )
+          path.write_text(text, encoding='utf-8')
+          PY
       - name: Install generator dependencies
         run: python -m pip install --disable-pip-version-check -e 'skills/gjb438c-md-first[test]'
       - name: Generate packaged profiles and thin skills

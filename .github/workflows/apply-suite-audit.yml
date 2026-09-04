@@ -1,0 +1,159 @@
+name: apply-suite-audit
+
+on:
+  push:
+    branches:
+      - feat/suite-volume-audit-and-template-baseline
+    paths:
+      - tools/apply_suite_audit.py
+      - .github/workflows/apply-suite-audit.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  apply-verify-merge:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/suite-volume-audit-and-template-baseline
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: skills/gjb438c-md-first/pyproject.toml
+
+      - name: Apply source changes
+        run: python tools/apply_suite_audit.py
+
+      - name: Install render and Python dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libreoffice-writer python3-uno poppler-utils
+          PYTHONPATH=/usr/lib/python3/dist-packages python -c 'import uno'
+          python -m pip install --disable-pip-version-check -e 'skills/gjb438c-md-first[test]'
+
+      - name: Generate persistent template page baseline
+        run: |
+          python tools/report_template_pages.py \
+            --output docs/TEMPLATE-PAGE-BASELINE.md \
+            --json docs/template-page-baseline.json
+          test "$(grep -c '^| [0-9]' docs/TEMPLATE-PAGE-BASELINE.md)" -eq 20
+
+      - name: Run full tests
+        run: python -m pytest skills/gjb438c-md-first/tests
+
+      - name: Exercise real suite audit with generated SRS and SDD
+        shell: bash
+        run: |
+          set -euo pipefail
+          work=/tmp/gjb438c-suite-audit
+          rm -rf "$work"
+          mkdir -p "$work"
+          cp skills/gjb438c-md-first/examples/SRS.example.md "$work/SRS.md"
+          cp skills/gjb438c-md-first/examples/SDD.example.md "$work/SDD.md"
+          gjb438c render "$work/SRS.md" \
+            --output "$work/SRS.docx" \
+            --profile release --scale prototype --refresh-toc \
+            --volume-json "$work/SRS.volume.json"
+          gjb438c render "$work/SDD.md" \
+            --output "$work/SDD.docx" \
+            --profile release --scale prototype --refresh-toc \
+            --baseline-srs "$work/SRS.md" \
+            --volume-json "$work/SDD.volume.json"
+          cat > "$work/suite.yaml" <<'EOF'
+          suite:
+            name: CI 示例文档套件
+            scale: prototype
+            required_documents: [SRS, SDD]
+            min_portfolio_pages: 2
+          documents:
+            - type: SRS
+              markdown: SRS.md
+              docx: SRS.docx
+              volume: SRS.volume.json
+            - type: SDD
+              markdown: SDD.md
+              docx: SDD.docx
+              volume: SDD.volume.json
+              baseline: SRS.md
+          EOF
+          sed -i 's/^          //' "$work/suite.yaml"
+          gjb438c audit-suite "$work/suite.yaml" \
+            --scale prototype --json "$work/suite.audit.json"
+          python - <<'PY'
+          import json
+          value = json.load(open('/tmp/gjb438c-suite-audit/suite.audit.json', encoding='utf-8'))
+          assert value['passed'] is True
+          assert value['summary']['documents'] == 2
+          assert value['summary']['total_pages'] >= 2
+          PY
+
+      - name: Verify tampering invalidates suite audit
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf '\nmodified after volume report\n' >> /tmp/gjb438c-suite-audit/SRS.md
+          if gjb438c audit-suite /tmp/gjb438c-suite-audit/suite.yaml --scale prototype; then
+            echo 'suite audit unexpectedly accepted a modified source' >&2
+            exit 1
+          fi
+
+      - name: Remove construction workflow and commit verified result
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f tools/apply_suite_audit.py
+          rm -f .github/workflows/apply-suite-audit.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "feat: add suite-level page and provenance audit"
+          git push origin HEAD:feat/suite-volume-audit-and-template-baseline
+
+      - name: Create or update pull request
+        id: pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          number="$(gh pr list --repo "$GITHUB_REPOSITORY" \
+            --head feat/suite-volume-audit-and-template-baseline \
+            --state open --json number --jq '.[0].number // empty')"
+          if [ -z "$number" ]; then
+            url="$(gh pr create --repo "$GITHUB_REPOSITORY" \
+              --base main --head feat/suite-volume-audit-and-template-baseline \
+              --title 'feat: add suite-level page and provenance audit' \
+              --body-file - <<'EOF'
+          ## 内容
+
+          - 每份单文档体量报告绑定 Markdown 和 DOCX 的 SHA-256；
+          - `audit-suite` 重新审核内容与 Word 格式，并校验哈希、单文档页数和全套总页数；
+          - 修改 Markdown 或 Word 后旧体量报告自动失效；
+          - 持久化二十份源模板的 LibreOffice 真实渲染页数基线；
+          - 明确公开样本不足，页数阈值属于项目规模工程策略，而非标准统一页数条款。
+
+          大型项目的核心规格、设计和测试文档按数百页门禁；职责较窄的文档不以重复内容强行扩充。
+          EOF
+            )"
+            number="${url##*/}"
+          fi
+          gh pr ready "$number" --repo "$GITHUB_REPOSITORY" || true
+          echo "number=$number" >> "$GITHUB_OUTPUT"
+
+      - name: Merge verified pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ steps.pr.outputs.number }}
+        run: |
+          gh pr merge "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" \
+            --squash --delete-branch \
+            --subject 'feat: add suite-level page and provenance audit' \
+            --body 'Bind volume reports to their Markdown and DOCX inputs, audit the complete tailored document suite, enforce aggregate page floors, and persist measured source-template page baselines.'

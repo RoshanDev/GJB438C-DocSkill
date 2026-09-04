@@ -1,0 +1,168 @@
+name: apply-volume-floor-fix
+
+on:
+  push:
+    branches:
+      - fix/volume-gates-cannot-be-lowered
+    paths:
+      - tools/apply_volume_floor_fix.py
+      - .github/workflows/apply-volume-floor-fix.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  apply-verify-merge:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/volume-gates-cannot-be-lowered
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: skills/gjb438c-md-first/pyproject.toml
+
+      - name: Apply source fix
+        run: python tools/apply_volume_floor_fix.py
+
+      - name: Install document and test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libreoffice-writer python3-uno poppler-utils
+          PYTHONPATH=/usr/lib/python3/dist-packages python -c 'import uno'
+          python -m pip install --disable-pip-version-check -e 'skills/gjb438c-md-first[test]'
+
+      - name: Run full test suite
+        run: python -m pytest skills/gjb438c-md-first/tests
+
+      - name: Verify page floors cannot be lowered from CLI primitives
+        run: |
+          python - <<'PY'
+          from gjb438c_suite.volume import VolumeError, minimum_pages
+          floor = minimum_pages('SDD', 'large')
+          assert floor >= 200
+          try:
+              minimum_pages('SDD', 'large', floor - 1)
+          except VolumeError:
+              pass
+          else:
+              raise SystemExit('lower override unexpectedly accepted')
+          assert minimum_pages('SDD', 'large', floor + 1) == floor + 1
+          PY
+
+      - name: Exercise fixture release and suite audit
+        shell: bash
+        run: |
+          set -euo pipefail
+          work=/tmp/gjb438c-floor-fix
+          rm -rf "$work"
+          mkdir -p "$work"
+          cp skills/gjb438c-md-first/examples/SRS.example.md "$work/SRS.md"
+          cp skills/gjb438c-md-first/examples/SDD.example.md "$work/SDD.md"
+          gjb438c render "$work/SRS.md" \
+            --output "$work/SRS.docx" \
+            --profile release --scale prototype --refresh-toc \
+            --volume-json "$work/SRS.volume.json"
+          gjb438c render "$work/SDD.md" \
+            --output "$work/SDD.docx" \
+            --profile release --scale prototype --refresh-toc \
+            --baseline-srs "$work/SRS.md" \
+            --volume-json "$work/SDD.volume.json"
+          cat > "$work/suite.yaml" <<'EOF'
+          suite:
+            name: CI 夹具套件
+            scale: prototype
+            fixture: true
+            required_documents: [SRS, SDD]
+            min_portfolio_pages: 2
+          documents:
+            - type: SRS
+              markdown: SRS.md
+              docx: SRS.docx
+              volume: SRS.volume.json
+            - type: SDD
+              markdown: SDD.md
+              docx: SDD.docx
+              volume: SDD.volume.json
+              baseline: SRS.md
+          EOF
+          sed -i 's/^          //' "$work/suite.yaml"
+          gjb438c audit-suite "$work/suite.yaml" --scale prototype
+
+      - name: Prove suite and document floors reject lowering
+        shell: bash
+        run: |
+          set -euo pipefail
+          work=/tmp/gjb438c-floor-fix
+          cp "$work/suite.yaml" "$work/suite-lowered.yaml"
+          sed -i 's/min_portfolio_pages: 2/min_portfolio_pages: 1/' "$work/suite-lowered.yaml"
+          if gjb438c audit-suite "$work/suite-lowered.yaml" --scale prototype; then
+            echo 'suite portfolio floor lowering was unexpectedly accepted' >&2
+            exit 1
+          fi
+          if gjb438c render "$work/SDD.md" \
+            --output "$work/SDD-invalid.docx" \
+            --profile release --scale large --min-pages 1 \
+            --baseline-srs "$work/SRS.md"; then
+            echo 'per-document page floor lowering was unexpectedly accepted' >&2
+            exit 1
+          fi
+
+      - name: Remove construction workflow and commit verified result
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f .github/workflows/apply-volume-floor-fix.yml
+          rm -f tools/apply_volume_floor_fix.py
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "fix: prevent lowering document and suite volume floors"
+          git push origin HEAD:fix/volume-gates-cannot-be-lowered
+
+      - name: Create pull request
+        id: pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          number="$(gh pr list --repo "$GITHUB_REPOSITORY" \
+            --head fix/volume-gates-cannot-be-lowered \
+            --state open --json number --jq '.[0].number // empty')"
+          if [ -z "$number" ]; then
+            url="$(gh pr create --repo "$GITHUB_REPOSITORY" \
+              --base main --head fix/volume-gates-cannot-be-lowered \
+              --title 'fix: prevent lowering GJB 438C volume floors' \
+              --body-file - <<'EOF'
+          ## 修复
+
+          - `--min-pages` 和单文档 manifest override 只能提高页数下限；
+          - 全套 `min_portfolio_pages` 只能提高根据裁剪集计算出的总页数下限；
+          - `prototype` 仅允许显式标记的示例/CI 夹具；
+          - 生产发布必须使用 `small` 或更高项目规模；
+          - 新增回归测试，覆盖所有已发现的降级绕过路径。
+
+          页数仍与章节覆盖、内容单位、来源证据、结构化条目和哈希绑定共同判定，不能靠空白或重复内容通过。
+          EOF
+            )"
+            number="${url##*/}"
+          fi
+          echo "number=$number" >> "$GITHUB_OUTPUT"
+
+      - name: Merge verified fix
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ steps.pr.outputs.number }}
+        run: |
+          gh pr merge "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" \
+            --squash --delete-branch \
+            --subject 'fix: prevent lowering GJB 438C volume floors' \
+            --body 'Make all page-floor overrides raise-only, reserve prototype scale for explicit fixtures, and derive tailored-suite portfolio floors so production release gates cannot be bypassed by configuration.'

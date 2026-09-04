@@ -1,0 +1,41 @@
+{
+  "page": {
+    "width_cm": 21.0,
+    "height_cm": 29.7,
+    "top_cm": 2.54,
+    "bottom_cm": 2.54,
+    "left_cm": 3.17,
+    "right_cm": 2.54
+  },
+  "fonts": {
+    "east_asia_body": "宋体",
+    "east_asia_heading": "黑体",
+    "latin": "Times New Roman"
+  },
+  "toc": {
+    "title_pt": 16.0,
+    "entry_pt": 12.0,
+    "line_spacing": 1.5,
+    "alignment": "justify"
+  },
+  "body": {
+    "pt": 12.0,
+    "line_spacing": 1.5,
+    "first_line_chars": 2.0,
+    "alignment": "justify"
+  },
+  "heading": {
+    "pt": 12.0,
+    "line_spacing": 1.5
+  },
+  "caption": {
+    "pt": 10.5,
+    "line_spacing": 1.0,
+    "east_asia_font": "黑体"
+  },
+  "table": {
+    "pt": 10.5,
+    "line_spacing": 1.0,
+    "east_asia_font": "宋体"
+  }
+}

@@ -1,0 +1,18 @@
+software:
+  name: 示例任务管理软件
+  version: V1.0
+  identifier: DEMO-CSCI
+organization: 示例研制单位
+classification: 公开
+date: '2026-09-04'
+document:
+  title: 软件设计说明
+  id: DEMO-SDD-001
+  version: V1.0
+  status: draft
+front_matter:
+  template: templates/front-matter/standard-front-matter.docx
+  archive_id: DEMO-2026-003
+  project_code: DEMO
+  phase: 研制
+  date_cn: 二〇二六年九月

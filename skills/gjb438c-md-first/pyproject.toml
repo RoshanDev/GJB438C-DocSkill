@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gjb438c-md-first"
+version = "0.2.0"
+description = "Markdown-first authoring, quality gates, and DOCX rendering for GJB 438C-2021 document suites"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "lxml>=5.0",
+  "python-docx>=1.1.2",
+  "PyYAML>=6.0.1",
+  "Pillow>=10.0"
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8.0", "pytest-cov>=5.0"]
+
+[project.scripts]
+gjb438c = "gjb438c_suite.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["gjb438c_suite*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

@@ -18,11 +18,9 @@ jobs:
       - uses: actions/checkout@v4
       - name: Pack source snapshot
         run: |
-          tar -czf /tmp/gjb438c-feature-source.tar.gz \
+          tar --exclude='skills/word-fillter-*' -czf /tmp/gjb438c-feature-source.tar.gz \
             README.md MD-FIRST-SUITE.md VERIFICATION.md THIRD_PARTY_NOTICES.md \
-            .claude-plugin .github/workflows/gjb438c-md-first.yml \
-            skills/gjb438c-md-first skills/gjb438c-* \
-            --exclude='skills/word-fillter-*'
+            .claude-plugin .github/workflows/gjb438c-md-first.yml skills
       - uses: actions/upload-artifact@v4
         with:
           name: gjb438c-feature-source

@@ -1,0 +1,137 @@
+name: apply-anti-padding-fix
+
+on:
+  push:
+    branches:
+      - fix/anti-padding-duplicate-content
+    paths:
+      - tools/apply_anti_padding_fix.py
+      - .github/workflows/apply-anti-padding-fix.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  apply-verify-merge:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/anti-padding-duplicate-content
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: skills/gjb438c-md-first/pyproject.toml
+
+      - name: Apply source changes
+        run: python tools/apply_anti_padding_fix.py
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libreoffice-writer python3-uno poppler-utils
+          PYTHONPATH=/usr/lib/python3/dist-packages python -c 'import uno'
+          python -m pip install --disable-pip-version-check -e 'skills/gjb438c-md-first[test]'
+
+      - name: Run full test suite
+        run: python -m pytest skills/gjb438c-md-first/tests
+
+      - name: Verify fixture Word generation still passes
+        shell: bash
+        run: |
+          set -euo pipefail
+          work=/tmp/gjb438c-anti-padding
+          rm -rf "$work"
+          mkdir -p "$work"
+          cp skills/gjb438c-md-first/examples/SRS.example.md "$work/SRS.md"
+          gjb438c render "$work/SRS.md" \
+            --output "$work/SRS.docx" \
+            --profile release --scale prototype --refresh-toc \
+            --volume-json "$work/SRS.volume.json"
+          python - <<'PY'
+          import json
+          value = json.load(open('/tmp/gjb438c-anti-padding/SRS.volume.json', encoding='utf-8'))
+          assert value['passed'] is True
+          assert 'minimum_visible_chars' in value
+          assert 'duplicate_ratio' in value
+          assert 'max_paragraph_repeat' in value
+          PY
+
+      - name: Verify repeated prose is rejected
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp skills/gjb438c-md-first/examples/SRS.example.md /tmp/gjb438c-anti-padding/repeated.md
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('/tmp/gjb438c-anti-padding/repeated.md')
+          paragraph = (
+              '本段是机械重复内容，虽然长度足够，但不包含新增的项目事实、接口约束、异常路径、验证证据或来源。'
+              '反复复制同一段落不能增加文档有效体量，也不能用于满足数百页发布门禁。'
+          )
+          with path.open('a', encoding='utf-8') as stream:
+              stream.write('\n\n' + '\n\n'.join([paragraph] * 20) + '\n')
+          PY
+          if gjb438c audit /tmp/gjb438c-anti-padding/repeated.md \
+            --profile release --scale large; then
+            echo 'duplicate prose unexpectedly passed release audit' >&2
+            exit 1
+          fi
+
+      - name: Remove construction files and commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f tools/apply_anti_padding_fix.py
+          rm -f .github/workflows/apply-anti-padding-fix.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "fix: reject sparse and duplicate-padded documents"
+          git push origin HEAD:fix/anti-padding-duplicate-content
+
+      - name: Create pull request
+        id: pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          number="$(gh pr list --repo "$GITHUB_REPOSITORY" \
+            --head fix/anti-padding-duplicate-content \
+            --state open --json number --jq '.[0].number // empty')"
+          if [ -z "$number" ]; then
+            url="$(gh pr create --repo "$GITHUB_REPOSITORY" \
+              --base main --head fix/anti-padding-duplicate-content \
+              --title 'fix: reject sparse and duplicate-padded GJB 438C documents' \
+              --body-file - <<'EOF'
+          ## 修复
+
+          - 按真实渲染页数计算可见正文字符密度；
+          - 检测并扣除完全重复的长段落；
+          - 重复占比超过项目规模上限时阻断发布；
+          - 隐藏结构化证据块不能替代最终 Word 中可见的技术正文；
+          - 体量报告记录可见正文下限、重复字符、重复占比和最大重复次数。
+
+          该门禁与章节覆盖、证据条目、真实页数、哈希绑定和全套总页数联合使用，避免只通过复制段落或插入空白页达到页数。
+          EOF
+            )"
+            number="${url##*/}"
+          fi
+          echo "number=$number" >> "$GITHUB_OUTPUT"
+
+      - name: Merge verified pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ steps.pr.outputs.number }}
+        run: |
+          gh pr merge "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" \
+            --squash --delete-branch \
+            --subject 'fix: reject sparse and duplicate-padded GJB 438C documents' \
+            --body 'Enforce visible-text density per rendered page, discount repeated long prose, and block duplicate-heavy release documents so page floors cannot be met with sparse or copied content.'

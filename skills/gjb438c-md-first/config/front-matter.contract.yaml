@@ -1,0 +1,41 @@
+version: 1
+name: standard-front-matter
+pages:
+  - 1: 首页
+  - 2: 签字页
+  - 3: 变更履历
+master: templates/front-matter/standard-front-matter.docx
+strict:
+  page_count: 3
+  top_level_tables: 2
+  cover_signature_table_rows: 5
+  revision_columns:
+    - 日期
+    - 修订版本
+    - 修订描述
+    - 作者
+anchors:
+  archive_label: 档案编号：
+  software_name: XXXXXX
+  document_title: 软件部署手册
+  organization: 编制单位
+  date: 二○   年  月
+metadata_table:
+  location: 第一张顶层表格/第1行/第2单元格/嵌套表格
+  rows:
+    - classification
+    - project_code
+    - document_id
+    - phase
+    - document_version
+signature_roles:
+  编制: prepared
+  审核: reviewed
+  标审: standard_reviewed
+  会签: countersigned
+  批准: approved
+notes:
+  - 母版由用户提供的完整文档前三页抽取并匿名化。
+  - 来源文件在 LibreOffice 中将封面日期挤到签字页顶部；归一化母版删除一个纯空白段落，使日期稳定留在首页。
+  - 变更履历页使用固定高度分页占位，保证 Word、WPS、LibreOffice 三页结构一致。
+  - 不在 DOCX 内写入长花括号占位符，避免占位符本身改变换行和分页。

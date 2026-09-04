@@ -1,0 +1,27 @@
+{
+  "archive_id": "DEMO-2026-001",
+  "classification": "公开",
+  "project_code": "DEMO",
+  "document_id": "DEMO-SRS-001",
+  "phase": "研制",
+  "document_version": "V1.0",
+  "software_name": "示例任务管理软件",
+  "document_title": "软件需求规格说明",
+  "organization": "示例研制单位",
+  "date_cn": "二〇二六年九月",
+  "signatures": {
+    "prepared": {"name": "", "date": ""},
+    "reviewed": {"name": "", "date": ""},
+    "standard_reviewed": {"name": "", "date": ""},
+    "countersigned": {"name": "", "date": ""},
+    "approved": {"name": "", "date": ""}
+  },
+  "revisions": [
+    {
+      "date": "2026-09-04",
+      "version": "V1.0",
+      "description": "建立 GJB 438C-2021 SRS 初稿",
+      "author": "项目组"
+    }
+  ]
+}

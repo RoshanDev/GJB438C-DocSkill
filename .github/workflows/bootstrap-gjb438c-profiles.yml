@@ -28,7 +28,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cat .bootstrap-profiles/part-* | base64 --decode > /tmp/profile-bootstrap.tar.xz
+          cat .bootstrap-profiles/part-* > /tmp/profile-bootstrap.tar.xz
           echo "c5375dcd636782d63bca1f08332faac3c2a9a521ca07daa7150b714a2fc8120f  /tmp/profile-bootstrap.tar.xz" | sha256sum -c -
           tar -xJf /tmp/profile-bootstrap.tar.xz -C .
       - name: Install generator dependencies

@@ -1,0 +1,111 @@
+name: gate-pr4-stable-head-v4
+
+on:
+  push:
+    branches: [automation/codex-gate-pr4]
+    paths: [.github/workflows/gate-pr4-stable-head-v4.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+  checks: read
+  actions: read
+
+jobs:
+  current-head-review-gate:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: RoshanDev/GJB438C-DocSkill
+      PR: '4'
+    steps:
+      - name: Wait for stable open PR head
+        shell: bash
+        run: |
+          set -euo pipefail
+          stable=0; previous=''; deadline=$((SECONDS+1800))
+          while ((SECONDS<deadline)); do
+            json=$(gh api "repos/$REPO/pulls/$PR")
+            [[ "$(jq -r .state <<<"$json")" == open && "$(jq -r .merged <<<"$json")" == false ]] || {
+              echo 'PR is no longer open/unmerged'; exit 1;
+            }
+            head=$(jq -r .head.sha <<<"$json")
+            active=$(gh api "repos/$REPO/actions/runs?head_sha=$head&per_page=100" --jq '[.workflow_runs[] | select(.status != "completed")] | length')
+            failed=$(gh api "repos/$REPO/actions/runs?head_sha=$head&per_page=100" --jq '[.workflow_runs[] | select(.status == "completed" and (.conclusion != "success" and .conclusion != "skipped" and .conclusion != "neutral"))] | length')
+            if [[ "$head" == "$previous" && "$active" -eq 0 && "$failed" -eq 0 ]]; then stable=$((stable+1)); else stable=0; fi
+            previous="$head"
+            if [[ "$stable" -ge 3 ]]; then echo "HEAD_SHA=$head" >> "$GITHUB_ENV"; exit 0; fi
+            sleep 20
+          done
+          echo 'Head never became stable and green' >&2; exit 1
+      - name: Mark ready and request fresh Codex review
+        shell: bash
+        run: |
+          set -euo pipefail
+          node=$(gh api "repos/$REPO/pulls/$PR" --jq .node_id)
+          gh api graphql -f query='mutation($id:ID!){markPullRequestReadyForReview(input:{pullRequestId:$id}){pullRequest{isDraft}}}' -f id="$node" >/dev/null || true
+          id=$(gh api "repos/$REPO/issues/$PR/comments" -f body="@codex review
+
+CODEX_GATE_V4 exact head: \`$HEAD_SHA\`.
+
+请完整复审当前精确 head。存在任何问题请提交 finding；只有本次请求明确 clean、当前 head 未移动、CI 全绿且未解决线程为零时才允许合并。" --jq .id)
+          echo "TRIGGER_ID=$id" >> "$GITHUB_ENV"
+      - name: Await exact-head clean review
+        shell: bash
+        run: |
+          set -euo pipefail
+          deadline=$((SECONDS+2400))
+          while ((SECONDS<deadline)); do
+            current=$(gh api "repos/$REPO/pulls/$PR" --jq .head.sha)
+            [[ "$current" == "$HEAD_SHA" ]] || { echo 'Head moved; this review is stale' >&2; exit 1; }
+            findings=$(gh api "repos/$REPO/pulls/$PR/comments?per_page=100" --paginate --jq '[.[] | select(.user.login == "chatgpt-codex-connector[bot]" or .user.login == "chatgpt-codex-connector") | select((.commit_id // .original_commit_id // "") == env.HEAD_SHA)] | length')
+            [[ "$findings" -eq 0 ]] || {
+              gh api "repos/$REPO/issues/$PR/comments" -f body="Merge blocked for \`$HEAD_SHA\`: Codex reported $findings current-head finding(s). Fix and request another review." >/dev/null
+              exit 1
+            }
+            clean=$(gh api -H 'Accept: application/vnd.github+json' "repos/$REPO/issues/comments/$TRIGGER_ID/reactions?per_page=100" --jq '[.[] | select((.user.login == "chatgpt-codex-connector[bot]" or .user.login == "chatgpt-codex-connector") and .content == "+1")] | length')
+            [[ "$clean" -gt 0 ]] && exit 0
+            sleep 20
+          done
+          echo 'Codex review timeout' >&2; exit 1
+      - uses: actions/checkout@v4
+        with:
+          repository: RoshanDev/GJB438C-DocSkill
+          ref: ${{ env.HEAD_SHA }}
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Direct-source and regression verification
+        shell: bash
+        run: |
+          set -euo pipefail
+          for file in volume.py suite.py profile_quality.py publication.py safe_cli.py _legacy_cli.py; do test -f "skills/gjb438c-md-first/gjb438c_suite/$file"; done
+          test -d legacy-skills/word-fillter-438c-srs
+          test -d legacy-skills/word-fillter-438c-sdd
+          test ! -d skills/word-fillter-438c-srs
+          test ! -d skills/word-fillter-438c-sdd
+          test ! -d .bootstrap-v03
+          for path in .github/workflows/post-review-hardening.yml .github/workflows/apply-v03-profiles.yml .github/workflows/finalize-v03.yml tools/repair_runtime_core_a.py tools/repair_runtime_core_b.py tools/post_review_hardening.py tools/post_review_hardening_followup.py; do test ! -e "$path"; done
+          python -m pip install --disable-pip-version-check -e 'skills/gjb438c-md-first[test]'
+          python -m pytest skills/gjb438c-md-first/tests
+          python -m compileall -q skills/gjb438c-md-first/gjb438c_suite
+          gjb438c --help | tee /tmp/help.txt
+          grep -q audit-volume /tmp/help.txt
+          grep -q volume-policy /tmp/help.txt
+          grep -Eq 'audit-suite|suite-audit' /tmp/help.txt
+      - name: Require zero unresolved current-head Codex threads
+        shell: bash
+        run: |
+          set -euo pipefail
+          query='query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){reviewThreads(first:100){nodes{isResolved isOutdated comments(first:20){nodes{author{login}commit{oid}}}}}}}}'
+          count=$(gh api graphql -f query="$query" -F owner=RoshanDev -F name=GJB438C-DocSkill -F number=4 --jq '[.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved == false and .isOutdated == false) | select(any(.comments.nodes[]; ((.author.login == "chatgpt-codex-connector" or .author.login == "chatgpt-codex-connector[bot]") and .commit.oid == env.HEAD_SHA)))] | length')
+          [[ "$count" -eq 0 ]] || { echo "$count unresolved current-head thread(s)" >&2; exit 1; }
+      - name: Merge immutable reviewed head
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$(gh api "repos/$REPO/pulls/$PR" --jq .head.sha)" == "$HEAD_SHA" ]]
+          gh api -X PUT "repos/$REPO/pulls/$PR/merge" -f sha="$HEAD_SHA" -f merge_method=squash -f commit_title='fix: close Codex post-merge findings' -f commit_message='Direct runtime, audited baseline enforcement, atomic DOCX/report publication, focused regression tests, green CI, and a clean Codex review on the exact merged head.' --jq '{merged,message,sha}'

@@ -1,0 +1,212 @@
+name: finalize-v03
+
+on:
+  push:
+    branches:
+      - feat/20-document-profiles-v03
+    paths:
+      - .github/workflows/finalize-v03.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  verify-and-merge:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/20-document-profiles-v03
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: skills/gjb438c-md-first/pyproject.toml
+
+      - name: Install document render dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libreoffice-writer python3-uno poppler-utils
+          PYTHONPATH=/usr/lib/python3/dist-packages python -c 'import uno'
+
+      - name: Install suite
+        run: python -m pip install --disable-pip-version-check -e 'skills/gjb438c-md-first[test]'
+
+      - name: Run full test suite
+        run: python -m pytest skills/gjb438c-md-first/tests
+
+      - name: Verify all twenty bundled profiles are self-contained
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/gjb438c-v03
+          mkdir -p /tmp/gjb438c-v03
+          for type in SDP SIP STrP STP OCD SSS IRS SSDD IDD SRS SDD DBDD STD STR SPS SVD SUM CPM FSM SDSR; do
+            gjb438c init \
+              --type "$type" \
+              --project skills/gjb438c-md-first/examples/project.yaml \
+              --output "/tmp/gjb438c-v03/$type.md"
+            test -s "/tmp/gjb438c-v03/$type.md"
+          done
+          test "$(find /tmp/gjb438c-v03 -maxdepth 1 -name '*.md' | wc -l)" -eq 20
+
+      - name: Verify release content, Word rendering and round trip
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/gjb438c-v03/dist
+          gjb438c audit skills/gjb438c-md-first/examples/SRS.example.md \
+            --profile release --scale prototype
+          gjb438c audit skills/gjb438c-md-first/examples/SDD.example.md \
+            --profile release --scale prototype \
+            --baseline-srs skills/gjb438c-md-first/examples/SRS.example.md
+          gjb438c render skills/gjb438c-md-first/examples/SRS.example.md \
+            --output /tmp/gjb438c-v03/dist/SRS.docx \
+            --profile release --scale prototype --refresh-toc \
+            --volume-json /tmp/gjb438c-v03/dist/SRS.volume.json
+          gjb438c render skills/gjb438c-md-first/examples/SDD.example.md \
+            --output /tmp/gjb438c-v03/dist/SDD.docx \
+            --profile release --scale prototype --refresh-toc \
+            --baseline-srs skills/gjb438c-md-first/examples/SRS.example.md \
+            --volume-json /tmp/gjb438c-v03/dist/SDD.volume.json
+          gjb438c audit-docx /tmp/gjb438c-v03/dist/SRS.docx --profile release
+          gjb438c audit-docx /tmp/gjb438c-v03/dist/SDD.docx --profile release
+          gjb438c import-word /tmp/gjb438c-v03/dist/SRS.docx \
+            --output /tmp/gjb438c-v03/dist/SRS.returned.md
+          cmp skills/gjb438c-md-first/examples/SRS.example.md \
+            /tmp/gjb438c-v03/dist/SRS.returned.md
+
+      - name: Verify architecture, page policy and anti-padding gates
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          from gjb438c_suite.profiles import iter_profiles
+          from gjb438c_suite.registry import iter_document_types
+          from gjb438c_suite.volume import VALID_SCALES, load_volume_policy, minimum_pages
+
+          root = Path.cwd()
+          profiles = list(iter_profiles())
+          types = list(iter_document_types())
+          assert len(profiles) == len(types) == 20
+          assert {p.document_type.code for p in profiles} == {t.code for t in types}
+          for profile in profiles:
+              assert len(profile.outline) >= 3
+              assert set(profile.document_type.required_artifacts) <= set(profile.artifact_contracts)
+
+          visible = {
+              path.name for path in (root / 'skills').glob('gjb438c-*')
+              if path.is_dir() and (path / 'SKILL.md').is_file()
+          }
+          expected = {'gjb438c-md-first'} | {f'gjb438c-{item.code.lower()}' for item in types}
+          assert visible == expected, (visible - expected, expected - visible)
+          for legacy in ('word-fillter-438c-srs', 'word-fillter-438c-sdd'):
+              assert not (root / 'skills' / legacy / 'SKILL.md').exists()
+              assert (root / 'skills' / legacy / 'LEGACY.md').is_file()
+
+          policy = load_volume_policy()
+          assert policy['status'] == 'repository-engineering-policy'
+          assert set(policy['documents']) == {item.code for item in types}
+          for code, values in policy['documents'].items():
+              assert set(values) == set(VALID_SCALES), code
+              ordered = [values[name] for name in VALID_SCALES]
+              assert ordered == sorted(ordered), (code, ordered)
+          for code in ('SSS', 'SRS', 'SSDD', 'SDD', 'STD', 'STR'):
+              assert minimum_pages(code, 'large') >= 200, code
+          for code in ('SIP', 'STrP', 'SVD'):
+              assert minimum_pages(code, 'large') < 100, code
+          assert policy['portfolio_min_pages']['large'] >= 3000
+          assert policy['text_equivalent_chars_per_page'] > 0
+          assert policy['repeatable_artifact_minima']['test-case']['large'] >= 300
+          assert policy['repeatable_artifact_minima']['requirement']['large'] >= 100
+          PY
+
+      - name: Remove temporary construction files and record verification
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f .github/workflows/finalize-v03.yml
+          rm -f .github/workflows/apply-v03-profiles.yml
+          rm -f .github/workflows/analyze-template-pages.yml
+          rm -f .github/workflows/export-gjb438c-feature-source.yml
+          rm -f tools/apply_v03_profiles.py
+          rm -rf .bootstrap-v03
+          cat > docs/V03-VERIFICATION.md <<'EOF'
+          # v0.3 验证记录
+
+          本版本采用“一个共享核心、二十个自包含 Profile、二十个薄入口 Skill”。
+
+          合并前自动验证包括：
+
+          - 二十类 Profile 均随 Python 包安装；
+          - 二十类在没有仓库根模板目录时均可执行 `gjb438c init`；
+          - 旧 SRS/SDD 直接 Word 填充器不再参与 Agent 自动发现；
+          - 全量 Python 测试；
+          - SRS/SDD 发布级内容审计；
+          - Markdown → DOCX、LibreOffice 目录刷新、DOCX 审计和 Markdown 精确回流；
+          - 五档项目规模的文档级页数策略；
+          - 大型项目核心规格、设计和测试文档的数百页门禁；
+          - 章节覆盖、等效正文单位和重复型证据数量等反注水门禁。
+
+          页数阈值属于本仓库工程质量策略，不冒充 GJB 438C 的统一页数条款。来源材料不足时应阻断发布，不能用重复内容、空白页、放大图片或虚构事实补足页数。
+          EOF
+          sed -i 's/^          //' docs/V03-VERIFICATION.md
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if ! git diff --cached --quiet; then
+            git commit -m "chore: finalize verified v0.3 profile architecture"
+            git push origin HEAD:feat/20-document-profiles-v03
+          fi
+
+      - name: Create or update pull request
+        id: pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          number="$(gh pr list \
+            --repo "$GITHUB_REPOSITORY" \
+            --head feat/20-document-profiles-v03 \
+            --state open \
+            --json number \
+            --jq '.[0].number // empty')"
+          if [ -z "$number" ]; then
+            url="$(gh pr create \
+              --repo "$GITHUB_REPOSITORY" \
+              --base main \
+              --head feat/20-document-profiles-v03 \
+              --title 'feat: integrate 20 self-contained GJB 438C profiles and volume gates' \
+              --body-file - <<'EOF'
+          ## 目标
+
+          - 一个共享 Markdown-first 核心；
+          - 二十个自包含 Profile；
+          - 二十个精确路由的薄入口 Skill；
+          - 旧 SRS/SDD Word 填充器降为显式兼容旁路；
+          - 按项目规模实施真实 DOCX 页数和反注水质量门禁。
+
+          页数阈值是仓库工程策略，不是 GJB 438C 统一页数条款。大型项目核心 SRS、SSS、SDD、SSDD、STD、STR 按数百页校验；短职责文档不强行灌水。
+          EOF
+            )"
+            number="${url##*/}"
+          fi
+          gh pr ready "$number" --repo "$GITHUB_REPOSITORY" || true
+          echo "number=$number" >> "$GITHUB_OUTPUT"
+
+      - name: Squash merge verified pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ steps.pr.outputs.number }}
+        run: |
+          gh pr merge "$PR_NUMBER" \
+            --repo "$GITHUB_REPOSITORY" \
+            --squash \
+            --delete-branch \
+            --subject 'feat: integrate 20 self-contained GJB 438C profiles and volume gates' \
+            --body 'Add twenty bundled document profiles and thin Agent Skill entrypoints, disable legacy routing conflicts, and enforce project-scale rendered-page plus evidence-density gates without treating page count as a substitute for technical content.'

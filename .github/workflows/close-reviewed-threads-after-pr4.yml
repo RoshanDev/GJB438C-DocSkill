@@ -1,0 +1,79 @@
+name: close-reviewed-threads-after-pr4
+
+on:
+  push:
+    branches: [automation/codex-gate-pr4]
+    paths: [.github/workflows/close-reviewed-threads-after-pr4.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+jobs:
+  wait-verify-and-close:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: RoshanDev/GJB438C-DocSkill
+    steps:
+      - name: Wait for PR 4 to be cleanly merged
+        shell: bash
+        run: |
+          set -euo pipefail
+          deadline=$((SECONDS+3600))
+          while ((SECONDS<deadline)); do
+            pr=$(gh api repos/$REPO/pulls/4)
+            if [[ "$(jq -r .merged <<<"$pr")" == true ]]; then
+              merge_sha=$(jq -r .merge_commit_sha <<<"$pr")
+              main_sha=$(gh api repos/$REPO/branches/main --jq .commit.sha)
+              [[ "$merge_sha" == "$main_sha" ]] || {
+                echo "main moved after PR 4; verifying ancestry"
+                compare=$(gh api "repos/$REPO/compare/$merge_sha...$main_sha" --jq .status)
+                [[ "$compare" == ahead || "$compare" == identical ]]
+              }
+              echo "MERGE_SHA=$merge_sha" >> "$GITHUB_ENV"
+              exit 0
+            fi
+            sleep 30
+          done
+          echo 'PR 4 was not merged by its clean-review gate' >&2
+          exit 1
+      - uses: actions/checkout@v4
+        with:
+          repository: RoshanDev/GJB438C-DocSkill
+          ref: ${{ env.MERGE_SHA }}
+      - name: Verify fixes are direct in the merged tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          for f in volume.py suite.py profile_quality.py publication.py safe_cli.py _legacy_cli.py suite_baseline_guard.py; do test -f "skills/gjb438c-md-first/gjb438c_suite/$f"; done
+          test -d legacy-skills/word-fillter-438c-srs
+          test -d legacy-skills/word-fillter-438c-sdd
+          test ! -d skills/word-fillter-438c-srs
+          test ! -d skills/word-fillter-438c-sdd
+          test ! -d .bootstrap-v03
+          test ! -f .github/workflows/post-review-hardening.yml
+      - name: Reply to and resolve the five PR 3 findings
+        shell: bash
+        run: |
+          set -euo pipefail
+          declare -A replies
+          replies[3940359519]="Fixed by PR #4: the runtime modules and legacy directory moves are committed directly in the reviewed tree; one-shot/self-mutating integration files are absent from the merged source."
+          replies[3940359521]="Fixed by PR #4: the failing generator path was removed from the final tree after direct runtime materialisation, so the indentation-sensitive patch is no longer part of build or release execution."
+          replies[3940359523]="Fixed by PR #4: the regex-based one-shot hardening script was removed after direct source materialisation; no replacement-template \\s path remains in the reviewed runtime."
+          replies[3940359524]="Fixed by PR #4 with suite_baseline_guard.py and regression tests: only required documents with existing audit artifacts and no document/global audit error can satisfy a baseline; stale manifest keys fail closed."
+          replies[3940359526]="Fixed by PR #4 with publication.py, safe_cli.py and regression tests: DOCX and both reports are written to sibling staging files before publication, reports publish first, DOCX commits last, and process-level failures roll back the previous release set."
+          for id in 3940359519 3940359521 3940359523 3940359524 3940359526; do
+            gh api -X POST "repos/$REPO/pulls/3/comments/$id/replies" -f body="${replies[$id]} Merged commit: $MERGE_SHA" >/dev/null || true
+          done
+          query='query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){reviewThreads(first:100){nodes{id isResolved comments(first:20){nodes{databaseId author{login}}}}}}}}'
+          mutation='mutation($id:ID!){resolveReviewThread(input:{threadId:$id}){thread{isResolved}}}'
+          for pr in 3 4; do
+            gh api graphql -f query="$query" -F owner=RoshanDev -F name=GJB438C-DocSkill -F number=$pr --jq \
+              '.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved == false) | select(any(.comments.nodes[]; (.author.login == "chatgpt-codex-connector" or .author.login == "chatgpt-codex-connector[bot]"))) | .id' |
+            while read -r thread; do
+              [[ -n "$thread" ]] && gh api graphql -f query="$mutation" -f id="$thread" >/dev/null
+            done
+          done

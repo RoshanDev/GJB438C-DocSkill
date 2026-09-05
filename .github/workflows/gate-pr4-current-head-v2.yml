@@ -1,0 +1,89 @@
+name: gate-pr4-current-head-v2
+
+on:
+  push:
+    branches: [automation/codex-gate-pr4]
+    paths: [.github/workflows/gate-pr4-current-head-v2.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  gate-current-head:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: RoshanDev/GJB438C-DocSkill
+      PR: '4'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: RoshanDev/GJB438C-DocSkill
+          ref: refs/pull/4/head
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Pin current head and latest review request
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "HEAD_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+          TRIGGER_ID=$(gh api "repos/$REPO/issues/$PR/comments?per_page=100" --paginate --jq \
+            '[.[] | select(.user.login == "RoshanDev" and (.body | startswith("@codex review")))] | last | .id')
+          test -n "$TRIGGER_ID" && test "$TRIGGER_ID" != null
+          echo "TRIGGER_ID=$TRIGGER_ID" >> "$GITHUB_ENV"
+      - name: Await clean Codex result on exact head
+        shell: bash
+        run: |
+          set -euo pipefail
+          deadline=$((SECONDS + 1200))
+          while (( SECONDS < deadline )); do
+            test "$(gh api "repos/$REPO/pulls/$PR" --jq .head.sha)" = "$HEAD_SHA" || {
+              echo 'PR head moved; fresh review required' >&2; exit 1;
+            }
+            findings=$(gh api "repos/$REPO/pulls/$PR/comments?per_page=100" --paginate --jq \
+              '[.[] | select(.user.login == "chatgpt-codex-connector[bot]" or .user.login == "chatgpt-codex-connector") | select((.commit_id // .original_commit_id // "") == env.HEAD_SHA)] | length')
+            if [[ "$findings" -gt 0 ]]; then
+              gh api "repos/$REPO/issues/$PR/comments" -f body="Merge blocked on \`$HEAD_SHA\`: latest Codex review has $findings inline finding(s)." >/dev/null
+              exit 1
+            fi
+            clean=$(gh api -H 'Accept: application/vnd.github+json' \
+              "repos/$REPO/issues/comments/$TRIGGER_ID/reactions?per_page=100" --jq \
+              '[.[] | select((.user.login == "chatgpt-codex-connector[bot]" or .user.login == "chatgpt-codex-connector") and .content == "+1")] | length')
+            [[ "$clean" -gt 0 ]] && exit 0
+            sleep 20
+          done
+          echo 'Timed out waiting for Codex' >&2
+          exit 1
+      - name: Run full current-head tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check -e 'skills/gjb438c-md-first[test]'
+          python -m pytest skills/gjb438c-md-first/tests
+          python -m compileall -q skills/gjb438c-md-first/gjb438c_suite
+          gjb438c --help | tee /tmp/help.txt
+          grep -q audit-volume /tmp/help.txt
+          grep -Eq 'audit-suite|suite-audit' /tmp/help.txt
+      - name: Ensure zero unresolved Codex threads for exact head
+        shell: bash
+        run: |
+          set -euo pipefail
+          query='query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){reviewThreads(first:100){nodes{isResolved isOutdated comments(first:20){nodes{author{login}commit{oid}}}}}}}}'
+          count=$(gh api graphql -f query="$query" -F owner=RoshanDev -F name=GJB438C-DocSkill -F number=4 --jq \
+            '[.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved == false and .isOutdated == false) | select(any(.comments.nodes[]; ((.author.login == "chatgpt-codex-connector" or .author.login == "chatgpt-codex-connector[bot]") and .commit.oid == env.HEAD_SHA)))] | length')
+          test "$count" -eq 0
+      - name: Merge exact clean head
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(gh api "repos/$REPO/pulls/$PR" --jq .head.sha)" = "$HEAD_SHA"
+          gh api -X PUT "repos/$REPO/pulls/$PR/merge" \
+            -f sha="$HEAD_SHA" -f merge_method=squash \
+            -f commit_title='fix: close Codex post-merge findings' \
+            -f commit_message='Direct runtime and legacy moves are reviewable in-tree; suite baselines require successfully audited documents; release DOCX and reports are staged and rolled back as a set; regression tests cover the prior findings.' \
+            --jq '{merged,message,sha}'

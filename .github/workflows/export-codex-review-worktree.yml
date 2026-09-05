@@ -1,0 +1,32 @@
+name: export-codex-review-worktree
+
+on:
+  push:
+    branches:
+      - fix/codex-review-findings-20260905
+    paths:
+      - .github/workflows/export-codex-review-worktree.yml
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Archive tracked worktree
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/export
+          git archive --format=tar.gz HEAD -o /tmp/export/source.tar.gz
+          git rev-parse HEAD > /tmp/export/COMMIT
+          sha256sum /tmp/export/source.tar.gz > /tmp/export/SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: codex-review-worktree
+          path: /tmp/export/
+          retention-days: 1

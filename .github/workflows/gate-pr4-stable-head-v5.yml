@@ -1,0 +1,107 @@
+name: gate-pr4-stable-head-v5
+
+on:
+  push:
+    branches: [automation/codex-gate-pr4]
+    paths: [.github/workflows/gate-pr4-stable-head-v5.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+  checks: read
+  actions: read
+
+jobs:
+  exact-head-gate:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: RoshanDev/GJB438C-DocSkill
+      PR: '4'
+    steps:
+      - name: Select a stable green head
+        shell: bash
+        run: |
+          set -euo pipefail
+          previous=''; stable=0; deadline=$((SECONDS+1800))
+          while ((SECONDS<deadline)); do
+            pr=$(gh api "repos/$REPO/pulls/$PR")
+            [[ "$(jq -r .state <<<"$pr")" == open && "$(jq -r .merged <<<"$pr")" == false ]] || exit 1
+            head=$(jq -r .head.sha <<<"$pr")
+            runs=$(gh api "repos/$REPO/actions/runs?head_sha=$head&per_page=100")
+            active=$(jq '[.workflow_runs[] | select(.status != "completed")] | length' <<<"$runs")
+            failed=$(jq '[.workflow_runs[] | select(.status == "completed" and (.conclusion != "success" and .conclusion != "skipped" and .conclusion != "neutral"))] | length' <<<"$runs")
+            if [[ "$head" == "$previous" && "$active" -eq 0 && "$failed" -eq 0 ]]; then stable=$((stable+1)); else stable=0; fi
+            previous="$head"
+            if [[ "$stable" -ge 4 ]]; then echo "HEAD_SHA=$head" >> "$GITHUB_ENV"; exit 0; fi
+            sleep 20
+          done
+          exit 1
+      - name: Request Codex review for the immutable head
+        shell: bash
+        run: |
+          set -euo pipefail
+          node=$(gh api "repos/$REPO/pulls/$PR" --jq .node_id)
+          gh api graphql -f query='mutation($id:ID!){markPullRequestReadyForReview(input:{pullRequestId:$id}){pullRequest{isDraft}}}' -f id="$node" >/dev/null || true
+          trigger=$(gh api "repos/$REPO/issues/$PR/comments" -f body="@codex review
+
+CODEX_GATE_V5 exact head \`$HEAD_SHA\`.
+
+请对当前精确 head 做完整审查。任何 finding 都必须阻断合并并进入下一轮修复；无 finding、测试全绿、线程为零且 head 未移动时才允许合并。" --jq .id)
+          echo "TRIGGER_ID=$trigger" >> "$GITHUB_ENV"
+      - name: Require explicit clean result and zero findings
+        shell: bash
+        run: |
+          set -euo pipefail
+          deadline=$((SECONDS+2400))
+          while ((SECONDS<deadline)); do
+            [[ "$(gh api "repos/$REPO/pulls/$PR" --jq .head.sha)" == "$HEAD_SHA" ]] || exit 1
+            findings=$(gh api "repos/$REPO/pulls/$PR/comments?per_page=100" --paginate --jq '[.[] | select(.user.login == "chatgpt-codex-connector[bot]" or .user.login == "chatgpt-codex-connector") | select((.commit_id // .original_commit_id // "") == env.HEAD_SHA)] | length')
+            [[ "$findings" -eq 0 ]] || {
+              gh api "repos/$REPO/issues/$PR/comments" -f body="V5 gate blocked merge on \`$HEAD_SHA\`: $findings current-head finding(s)." >/dev/null
+              exit 1
+            }
+            clean=$(gh api -H 'Accept: application/vnd.github+json' "repos/$REPO/issues/comments/$TRIGGER_ID/reactions?per_page=100" --jq '[.[] | select((.user.login == "chatgpt-codex-connector[bot]" or .user.login == "chatgpt-codex-connector") and .content == "+1")] | length')
+            [[ "$clean" -gt 0 ]] && exit 0
+            sleep 20
+          done
+          exit 1
+      - uses: actions/checkout@v4
+        with:
+          repository: RoshanDev/GJB438C-DocSkill
+          ref: ${{ env.HEAD_SHA }}
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Direct-source, packaging, CLI and regression checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          for file in volume.py suite.py profile_quality.py publication.py safe_cli.py _legacy_cli.py suite_baseline_guard.py; do test -f "skills/gjb438c-md-first/gjb438c_suite/$file"; done
+          test -d legacy-skills/word-fillter-438c-srs && test -d legacy-skills/word-fillter-438c-sdd
+          test ! -d skills/word-fillter-438c-srs && test ! -d skills/word-fillter-438c-sdd
+          test ! -d .bootstrap-v03
+          for p in .github/workflows/post-review-hardening.yml .github/workflows/apply-v03-profiles.yml .github/workflows/finalize-v03.yml tools/repair_runtime_core_a.py tools/repair_runtime_core_b.py tools/post_review_hardening.py tools/post_review_hardening_followup.py; do test ! -e "$p"; done
+          python -m pip install --disable-pip-version-check -e 'skills/gjb438c-md-first[test]'
+          python -m pytest skills/gjb438c-md-first/tests
+          python -m compileall -q skills/gjb438c-md-first/gjb438c_suite
+          gjb438c --help | tee /tmp/help.txt
+          grep -q audit-volume /tmp/help.txt
+          grep -q volume-policy /tmp/help.txt
+          grep -Eq 'audit-suite|suite-audit' /tmp/help.txt
+      - name: Require no unresolved current-head Codex thread
+        shell: bash
+        run: |
+          set -euo pipefail
+          q='query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){reviewThreads(first:100){nodes{isResolved isOutdated comments(first:20){nodes{author{login}commit{oid}}}}}}}}'
+          n=$(gh api graphql -f query="$q" -F owner=RoshanDev -F name=GJB438C-DocSkill -F number=4 --jq '[.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved == false and .isOutdated == false) | select(any(.comments.nodes[]; ((.author.login == "chatgpt-codex-connector" or .author.login == "chatgpt-codex-connector[bot]") and .commit.oid == env.HEAD_SHA)))] | length')
+          [[ "$n" -eq 0 ]]
+      - name: Merge only this reviewed SHA
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$(gh api "repos/$REPO/pulls/$PR" --jq .head.sha)" == "$HEAD_SHA" ]]
+          gh api -X PUT "repos/$REPO/pulls/$PR/merge" -f sha="$HEAD_SHA" -f merge_method=squash -f commit_title='fix: close Codex post-merge review findings' -f commit_message='All Codex findings fixed in direct source, regression suite green, no unresolved current-head threads, and exact-head clean review confirmed.' --jq '{merged,message,sha}'

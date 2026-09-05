@@ -1,0 +1,104 @@
+name: gate-pr4-on-clean-codex
+
+on:
+  push:
+    branches: [automation/codex-gate-pr4]
+    paths: [.github/workflows/gate-pr4-on-clean-codex.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+  checks: read
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: RoshanDev/GJB438C-DocSkill
+      PR: '4'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: RoshanDev/GJB438C-DocSkill
+          ref: refs/pull/4/head
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Capture immutable PR head and review trigger
+        shell: bash
+        run: |
+          set -euo pipefail
+          HEAD_SHA=$(git rev-parse HEAD)
+          echo "HEAD_SHA=$HEAD_SHA" >> "$GITHUB_ENV"
+          TRIGGER_ID=$(gh api "repos/$REPO/issues/$PR/comments?per_page=100" --paginate --jq \
+            '[.[] | select(.user.login == "RoshanDev" and (.body | startswith("@codex review")))] | last | .id')
+          test -n "$TRIGGER_ID" && test "$TRIGGER_ID" != null
+          echo "TRIGGER_ID=$TRIGGER_ID" >> "$GITHUB_ENV"
+          echo "Review gate is pinned to $HEAD_SHA and trigger comment $TRIGGER_ID"
+      - name: Wait for Codex and reject any finding
+        shell: bash
+        run: |
+          set -euo pipefail
+          deadline=$((SECONDS + 1200))
+          while (( SECONDS < deadline )); do
+            CURRENT=$(gh api "repos/$REPO/pulls/$PR" --jq .head.sha)
+            if [[ "$CURRENT" != "$HEAD_SHA" ]]; then
+              echo "PR head moved from $HEAD_SHA to $CURRENT; a fresh review is required" >&2
+              exit 1
+            fi
+
+            FINDINGS=$(gh api "repos/$REPO/pulls/$PR/comments?per_page=100" --paginate --jq \
+              '[.[] | select(.user.login == "chatgpt-codex-connector[bot]" or .user.login == "chatgpt-codex-connector") | select((.commit_id // .original_commit_id // "") == env.HEAD_SHA)] | length')
+            if [[ "$FINDINGS" -gt 0 ]]; then
+              gh api "repos/$REPO/pulls/$PR/comments?per_page=100" --paginate --jq \
+                '.[] | select(.user.login == "chatgpt-codex-connector[bot]" or .user.login == "chatgpt-codex-connector") | select((.commit_id // .original_commit_id // "") == env.HEAD_SHA) | "FINDING: \(.path):\(.line // .original_line // 0) \(.body)"'
+              gh api "repos/$REPO/issues/$PR/comments" -f body="Codex review gate blocked merge on commit \`$HEAD_SHA\`: the latest review contains $FINDINGS inline finding(s). Fix them, push a new head, and request a fresh review." >/dev/null
+              exit 1
+            fi
+
+            CLEAN=$(gh api -H 'Accept: application/vnd.github+json' \
+              "repos/$REPO/issues/comments/$TRIGGER_ID/reactions?per_page=100" --jq \
+              '[.[] | select((.user.login == "chatgpt-codex-connector[bot]" or .user.login == "chatgpt-codex-connector") and .content == "+1")] | length')
+            if [[ "$CLEAN" -gt 0 ]]; then
+              echo "Codex marked the current review request clean"
+              exit 0
+            fi
+            sleep 20
+          done
+          echo "Timed out waiting for a clean Codex review" >&2
+          exit 1
+      - name: Install and execute the current-head test suite
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check -e 'skills/gjb438c-md-first[test]'
+          python -m pytest skills/gjb438c-md-first/tests
+          python -m compileall -q skills/gjb438c-md-first/gjb438c_suite
+          gjb438c --help | tee /tmp/gjb-help.txt
+          grep -q 'audit-volume' /tmp/gjb-help.txt
+          grep -q 'volume-policy' /tmp/gjb-help.txt
+          grep -Eq 'audit-suite|suite-audit' /tmp/gjb-help.txt
+      - name: Verify there are no unresolved current-head Codex threads
+        shell: bash
+        run: |
+          set -euo pipefail
+          QUERY='query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){reviewThreads(first:100){nodes{isResolved isOutdated comments(first:20){nodes{author{login}commit{oid}body}}}}}}}'
+          UNRESOLVED=$(gh api graphql -f query="$QUERY" -F owner=RoshanDev -F name=GJB438C-DocSkill -F number=4 --jq \
+            '[.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved == false and .isOutdated == false) | select(any(.comments.nodes[]; ((.author.login == "chatgpt-codex-connector" or .author.login == "chatgpt-codex-connector[bot]") and .commit.oid == env.HEAD_SHA)))] | length')
+          test "$UNRESOLVED" -eq 0
+      - name: Squash merge the exact reviewed head
+        shell: bash
+        run: |
+          set -euo pipefail
+          CURRENT=$(gh api "repos/$REPO/pulls/$PR" --jq .head.sha)
+          test "$CURRENT" = "$HEAD_SHA"
+          gh api -X PUT "repos/$REPO/pulls/$PR/merge" \
+            -f sha="$HEAD_SHA" \
+            -f merge_method=squash \
+            -f commit_title='fix: address Codex post-merge review findings' \
+            -f commit_message='Directly commit the runtime, enforce audited baseline presence, and publish DOCX plus audit reports as a staged release set. Includes regression tests and a clean current-head Codex review gate.' \
+            --jq '{merged, message, sha}'

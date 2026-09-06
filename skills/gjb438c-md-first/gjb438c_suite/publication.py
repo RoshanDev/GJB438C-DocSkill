@@ -38,7 +38,9 @@ def distinct_paths(paths: Iterable[str | Path]) -> list[Path]:
 
 
 def _fsync_file(path: Path) -> None:
-    with path.open("rb") as stream:
+    # Windows _commit/FlushFileBuffers requires a writable handle.
+    # r+b does not truncate or change bytes, and remains valid on POSIX.
+    with path.open("r+b") as stream:
         os.fsync(stream.fileno())
 
 
@@ -60,7 +62,7 @@ def _locks(paths: list[Path]):
     try:
         for target in sorted(paths):
             target.parent.mkdir(parents=True, exist_ok=True)
-            token = hashlib.sha256(str(target).encode()).hexdigest()[:24]
+            token = hashlib.sha256(os.path.normcase(str(target)).encode()).hexdigest()[:24]
             lock = target.parent / f".gjb-publish-{token}.lock"
             try:
                 fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)

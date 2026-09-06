@@ -277,7 +277,8 @@ def _blank(value: Any) -> bool:
 
 
 def _normalized_heading(value: str) -> str:
-    value = re.sub(r"^\s*\d+(?:\.\d+)*\s*", "", value.strip())
+    from .markdown_doc import split_clause_title
+    _, value = split_clause_title(value)
     return re.sub(r"[\s\u3000:：()（）]+", "", value).lower()
 
 

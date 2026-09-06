@@ -179,5 +179,7 @@ def import_word(input_docx: str | Path, output_markdown: str | Path) -> ImportRe
         )
         value = f"---\n{front}\n---\n\n<!-- {warning} -->\n\n{candidate}"
     output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(value, encoding="utf-8")
+    # No platform newline translation: exact means byte-for-byte, not just
+    # equivalent text after universal-newline decoding.
+    output.write_bytes(value.encode("utf-8"))
     return ImportResult(output, exact, warning)

@@ -20,7 +20,7 @@ ANY_FENCE_RE = re.compile(
     re.MULTILINE | re.DOTALL,
 )
 PLACEHOLDER_RE = re.compile(
-    r"(?:\bTODO\b|\bTBD\b|待补充|待确认|待定|XXXX+|"
+    r"(?:\bTODO\b|\bTBD\b|待提供|待测试执行|待补充|待确认|待定|XXXX+|"
     r"[<\[]\s*(?:TBD|TODO|待补充|待确认)\s*[>\]]|\{\{[^}\n]+\}\})",
     re.IGNORECASE,
 )
@@ -102,6 +102,14 @@ def split_front_matter(raw: str) -> tuple[dict[str, Any], str, int, list[str]]:
             errors.append("YAML front matter 必须是映射对象")
         else:
             metadata = loaded
+            for name in ("document", "software", "project", "quality", "approval"):
+                if name in metadata and not isinstance(metadata[name], dict):
+                    errors.append(f"metadata.{name} must be a mapping")
+                    metadata[name] = {}
+            if "sources" in metadata and (not isinstance(metadata["sources"], list)
+                    or any(not isinstance(s, dict) for s in metadata["sources"])):
+                errors.append("metadata.sources must be a list of mappings")
+                metadata["sources"] = []
     except yaml.YAMLError as exc:
         errors.append(f"YAML front matter 解析失败：{exc}")
     offset = match.end()
@@ -411,10 +419,10 @@ def render_skeleton(
     metadata = {
         "document": {
             "type": document_type.code,
-            "title": document.get("title", f"{software.get('name', '待补充软件')}{document_type.chinese_name}"),
+            "title": document.get("title", document_type.chinese_name),
             "id": document.get("id", f"DOC-{document_type.code}-TBD"),
             "version": document.get("version", "V0.1"),
-            "status": document.get("status", "draft"),
+            "status": "draft",
             "standard_clause": document_type.clause,
             "appendix": document_type.appendix,
         },
@@ -449,6 +457,7 @@ def render_skeleton(
         ),
         "sources": project.get("sources", []),
     }
+    metadata["quality"] = dict(project.get("quality") or {"tier": "large"})
     yaml_text = yaml.safe_dump(metadata, allow_unicode=True, sort_keys=False).rstrip()
     lines = ["---", yaml_text, "---", "", f"# {metadata['document']['title']}", ""]
     counters = [0] * 9
@@ -464,6 +473,10 @@ def render_skeleton(
         label = f"{number} {heading.title}" if number else heading.title
         lines.extend([f"{marks} {label}", "", "待补充。", ""])
     lines.extend(["# 附录A 质量门禁数据块", ""])
-    for index, kind in enumerate(document_type.required_artifacts, 1):
-        lines.append(_artifact_stub(kind, index))
+    from .profiles import artifact_contracts_for
+    for index, contract in enumerate(artifact_contracts_for(document_type.code), 1):
+        kind = contract["kind"]
+        payload = {name: "待提供" for name in contract["required_fields"]}
+        payload["id"] = f"{document_type.code}-{kind.upper()}-{index:03d}"
+        lines.append("```gjb-" + kind + "\n" + yaml.safe_dump(payload, allow_unicode=True, sort_keys=False) + "```\n")
     return "\n".join(lines).rstrip() + "\n"

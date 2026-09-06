@@ -70,7 +70,7 @@ def _validate_profile(value: Any, *, source: str) -> dict[str, Any]:
 
 
 @lru_cache(maxsize=None)
-def load_profile(code: str) -> dict[str, Any]:
+def _load_profile_cached(code: str) -> dict[str, Any]:
     """Return a defensive copy of a packaged profile."""
     normalized = code.strip().upper()
     filename = _profile_name(normalized)
@@ -111,3 +111,14 @@ def volume_policy_for(code: str, tier: str) -> dict[str, Any]:
 
 def artifact_contracts_for(code: str) -> list[dict[str, Any]]:
     return deepcopy(load_profile(code)["artifact_contracts"])
+
+
+def load_profile(code: str) -> dict[str, Any]:
+    """Each consumer receives an isolated profile, never the cached object."""
+    return deepcopy(_load_profile_cached(code))
+
+
+def heading_outline(code: str):
+    from .markdown_doc import Heading
+    return [Heading(int(h["level"]), str(h["title"]), 0, h.get("number"))
+            for h in load_profile(code)["outline"]]

@@ -651,6 +651,8 @@ def render_document(
         first, last = _render_markdown_body(
             document, markdown, styles, release=release
         )
+        from .evidence import append_evidence
+        last = append_evidence(document, markdown, styles) or last
         _bookmark_start(first)
         _bookmark_end(last)
 

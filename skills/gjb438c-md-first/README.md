@@ -1,64 +1,17 @@
-# gjb438c-md-first
+# GJB 438C Markdown-first 0.4.0
 
-覆盖 GJB 438C-2021 二十类文档的 Markdown-first 编写、内容审计、统一版式 DOCX 渲染与 Word 回流工具。
-
-## 安装
+本目录是可独立安装的 Python 包及 Agent Skill。默认使用随包的二十类 Profile 和中性前三页 DOCX 母版，无需仓库根模板目录。
 
 ```bash
-python -m pip install -e '.[test]'
-```
-
-安装后使用统一命令 `gjb438c`。
-
-## 命令
-
-```text
+python -m pip install --upgrade .
+gjb438c --version
+gjb438c doctor
 gjb438c list
-gjb438c init --type SRS --project examples/project.yaml --output docs/SRS.md
-gjb438c audit docs/SRS.md --profile release
-gjb438c audit docs/SDD.md --profile release --baseline-srs docs/SRS.md
-gjb438c render docs/SDD.md --output dist/SDD.docx --profile release \
-  --baseline-srs docs/SRS.md --refresh-toc
-gjb438c refresh-toc dist/SDD.docx
-gjb438c audit-docx dist/SDD.docx --profile release
-gjb438c import-word dist/SDD-reviewed.docx --output docs/SDD-returned.md
+gjb438c init --type OCD --output docs/OCD.md
 ```
 
-## 目录
+完整工作流、限制、格式和人工批准要求见同目录 `SKILL.md`。普通生成只使用核心与对应 `gjb438c-xxx` 薄入口，不使用旧 `word-fillter-*`。
 
-```text
-gjb438c-md-first/
-├── SKILL.md
-├── config/
-│   ├── front-matter.contract.yaml
-│   └── style.json
-├── docs/
-├── examples/
-│   ├── project.yaml
-│   ├── SRS.example.md
-│   └── SDD.example.md
-├── gjb438c_suite/
-│   ├── registry.py       # 20 类文档注册表
-│   ├── markdown_doc.py   # Markdown 与 gjb-* 结构化块
-│   ├── quality.py        # 内容门禁
-│   ├── front_matter.py   # 统一前三页严格填写
-│   ├── render.py         # Markdown→DOCX
-│   ├── finalize.py       # TOC 缓存安全刷新
-│   ├── audit_docx.py     # Word 格式审计
-│   ├── import_word.py    # Word→Markdown
-│   └── cli.py
-├── templates/front-matter/standard-front-matter.docx
-└── tests/
-```
+正式 `render --profile release` 完成内容、基线、格式、目录和真实页数审计后，才提交 DOCX 与三份 JSON 报告。审计失败不覆盖旧发布集。发布集替换并非多文件全局原子快照；消费者须核验哈希，进程终止后需人工检查遗留锁和备份。
 
-## 发布判定
-
-一个 Word 文件只有同时满足以下条件才算通过本工具的发布门禁：
-
-1. Markdown 内容审计通过；
-2. 统一前三页结构与字段完整；
-3. 可见目录缓存已经刷新；
-4. 原生 TOC、PAGE 域和正文书签存在；
-5. 标题、正文、图表题和表内文字样式符合锁定格式；
-6. 不存在 `TODO`、`TBD`、`待补充`、`XXXX` 等占位内容；
-7. SDD/SSDD 对已审核 SRS/SSS 的需求映射完整。
+`review` 只表示机器规则结果，不代表来源事实成立或人工批准。初始骨架应通过 draft 而不应通过 review/release。工具不生成真实签字、不虚构测试结果、不凭页数证明内容质量。

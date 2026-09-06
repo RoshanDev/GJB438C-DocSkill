@@ -1,0 +1,73 @@
+name: cleanup-codex-review-branch
+
+on:
+  push:
+    branches: [fix/codex-review-findings-20260905]
+    paths: [.github/workflows/cleanup-codex-review-branch.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  cleanup-and-test:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/codex-review-findings-20260905
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Remove temporary review scaffolding
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f .github/workflows/cleanup-codex-review-branch.yml
+          rm -f .github/workflows/export-codex-review-worktree.yml
+          rm -f REVIEW-GATE.md CODEX-REVIEW-FINDINGS.md _should_not_exist_test.txt
+          rm -f .github/PULL_REQUEST_TEMPLATE.md
+          rm -f docs/REVIEW-PROCESS.md docs/.review-cycle docs/NO-PREMATURE-MERGE.md
+          rm -f docs/REVIEW-CHECKLIST.md docs/REVIEW-GATE-STATUS.md docs/REVIEW-GATE-POLICY.md
+          rm -f docs/MERGE-GATE.md docs/.do-not-merge docs/CURRENT-REVIEW-STATE.md
+          rm -f docs/REVIEW-ROUND-1.md docs/REVIEW-ROUND-STATUS.md docs/MERGE-BLOCKED.md
+          rm -f docs/CODEX-REVIEW-GATE.md
+      - name: Verify directly committed runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f skills/gjb438c-md-first/gjb438c_suite/volume.py
+          test -f skills/gjb438c-md-first/gjb438c_suite/suite.py
+          test -f skills/gjb438c-md-first/gjb438c_suite/profile_quality.py
+          test -d legacy-skills/word-fillter-438c-srs
+          test -d legacy-skills/word-fillter-438c-sdd
+          test ! -d skills/word-fillter-438c-srs
+          test ! -d skills/word-fillter-438c-sdd
+          test ! -f .github/workflows/post-review-hardening.yml
+          test ! -f tools/repair_runtime_core_a.py
+          test ! -f tools/repair_runtime_core_b.py
+          test ! -f tools/post_review_hardening.py
+          test ! -f tools/post_review_hardening_followup.py
+      - name: Install and test
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check -e 'skills/gjb438c-md-first[test]'
+          python -m pytest skills/gjb438c-md-first/tests
+          python -m compileall -q skills/gjb438c-md-first/gjb438c_suite
+          gjb438c --help | tee /tmp/help.txt
+          grep -q 'audit-volume' /tmp/help.txt
+          grep -q 'volume-policy' /tmp/help.txt
+          grep -Eq 'audit-suite|suite-audit' /tmp/help.txt
+      - name: Commit clean direct-source tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git diff --cached --quiet && exit 0
+          git commit -m 'chore: remove temporary review scaffolding'
+          git push origin HEAD:fix/codex-review-findings-20260905

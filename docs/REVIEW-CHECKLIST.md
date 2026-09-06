@@ -1,0 +1,5 @@
+- [ ] direct runtime committed
+- [ ] tests pass
+- [ ] Codex findings fixed
+- [ ] fresh Codex review clean
+- [ ] only then merge

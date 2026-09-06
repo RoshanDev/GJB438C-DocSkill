@@ -25,8 +25,31 @@ jobs:
           python-version: ${{ matrix.python }}
       - run: python -m pip install -e "skills/gjb438c-md-first[test]" wheel
       - run: python -m compileall -q skills/gjb438c-md-first/gjb438c_suite
-      - run: python -m pytest skills/gjb438c-md-first/tests -q
+      - run: python -m pytest skills/gjb438c-md-first/tests -q --junitxml=test-results.xml
       - run: python tools/check_wheel.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: tests-${{ matrix.os }}-${{ matrix.python }}
+          path: test-results.xml
+          retention-days: 7
+  review-source:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Archive exact tracked revision for independent reproduction
+        run: |
+          mkdir -p /tmp/gjb-reviewed-source
+          git archive --format=tar.gz HEAD -o /tmp/gjb-reviewed-source/source.tar.gz
+          git rev-parse HEAD > /tmp/gjb-reviewed-source/COMMIT
+          sha256sum /tmp/gjb-reviewed-source/source.tar.gz > /tmp/gjb-reviewed-source/SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: reviewed-source
+          path: /tmp/gjb-reviewed-source/
+          retention-days: 7
   office:
     runs-on: ubuntu-latest
     timeout-minutes: 20

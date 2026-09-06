@@ -1,9 +1,13 @@
-## Review gate
+## 改动及复现
 
-- [ ] Current-head CI passes.
-- [ ] All Codex review findings are fixed in direct, reviewable source code.
-- [ ] All inline review threads are resolved.
-- [ ] A fresh `@codex review` on the current head completes with no findings.
-- [ ] The pull request has not moved since that clean review.
+说明实际修复、回归测试及兼容影响。源码必须直接在本提交中，不依赖工作流未来生成。
 
-Do not merge while any item is unchecked.
+## 合并检查
+
+- [ ] 当前 head 的全部 CI 成功。
+- [ ] 当前精确 head 已完成 Codex review，新增 finding 均已修复并复审。
+- [ ] 审查后 head 没有变化；合并使用 expected SHA。
+- [ ] 无未解决的阻断问题，无 bootstrap 或自修改源码工作流。
+- [ ] 独立安装与公开仓库隐私测试通过。
+
+不得将合并成功、机器审计通过或合成分页样本描述为真实项目内容验收。

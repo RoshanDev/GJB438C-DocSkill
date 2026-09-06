@@ -1,69 +1,71 @@
 name: gjb438c-md-first
-
 on:
   pull_request:
-    paths:
-      - 'skills/gjb438c-md-first/**'
-      - '.github/workflows/gjb438c-md-first.yml'
-      - '.claude-plugin/**'
-      - 'README.md'
-      - 'VERIFICATION.md'
   push:
-    branches: [main, feat/gjb438c-md-first-suite]
-    paths:
-      - 'skills/gjb438c-md-first/**'
-      - '.github/workflows/gjb438c-md-first.yml'
-      - '.claude-plugin/**'
-      - 'README.md'
-      - 'VERIFICATION.md'
+    branches: [main]
   workflow_dispatch:
-
 permissions:
   contents: read
-
+env:
+  PYTHONUTF8: '1'
 jobs:
   test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python: ['3.11', '3.12']
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: python -m pip install -e "skills/gjb438c-md-first[test]" wheel
+      - run: python -m compileall -q skills/gjb438c-md-first/gjb438c_suite
+      - run: python -m pytest skills/gjb438c-md-first/tests -q --junitxml=test-results.xml
+      - run: python tools/check_wheel.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: tests-${{ matrix.os }}-${{ matrix.python }}
+          path: test-results.xml
+          retention-days: 7
+  review-source:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Archive exact tracked revision for independent reproduction
+        run: |
+          mkdir -p /tmp/gjb-reviewed-source
+          git archive --format=tar.gz HEAD -o /tmp/gjb-reviewed-source/source.tar.gz
+          git rev-parse HEAD > /tmp/gjb-reviewed-source/COMMIT
+          sha256sum /tmp/gjb-reviewed-source/source.tar.gz > /tmp/gjb-reviewed-source/SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: reviewed-source
+          path: /tmp/gjb-reviewed-source/
+          retention-days: 7
+  office:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-          cache: pip
-          cache-dependency-path: skills/gjb438c-md-first/pyproject.toml
-      - name: Install LibreOffice and UNO bridge for TOC checks
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libreoffice-writer python3-uno poppler-utils
-          PYTHONPATH=/usr/lib/python3/dist-packages python -c 'import uno'
-      - name: Install suite
-        run: python -m pip install -e 'skills/gjb438c-md-first[test]'
-      - name: Unit tests
-        run: python -m pytest skills/gjb438c-md-first/tests
-      - name: All 20 template outlines
-        run: python skills/gjb438c-md-first/tools/smoke_all_templates.py
-      - name: Content gates
-        run: |
-          gjb438c audit skills/gjb438c-md-first/examples/SRS.example.md --profile release
-          gjb438c audit skills/gjb438c-md-first/examples/SDD.example.md \
-            --profile release \
-            --baseline-srs skills/gjb438c-md-first/examples/SRS.example.md
-      - name: Render and audit release DOCX
-        run: |
-          mkdir -p dist
-          gjb438c render skills/gjb438c-md-first/examples/SRS.example.md \
-            --output dist/SRS.docx --profile release --refresh-toc
-          gjb438c render skills/gjb438c-md-first/examples/SDD.example.md \
-            --output dist/SDD.docx --profile release \
-            --baseline-srs skills/gjb438c-md-first/examples/SRS.example.md \
-            --refresh-toc
-          gjb438c audit-docx dist/SRS.docx --profile release
-          gjb438c audit-docx dist/SDD.docx --profile release
-      - name: Markdown round trip
-        run: |
-          gjb438c import-word dist/SRS.docx --output dist/SRS.returned.md
-          cmp skills/gjb438c-md-first/examples/SRS.example.md dist/SRS.returned.md
-      - uses: actions/upload-artifact@v4
-        with:
-          name: gjb438c-md-first-smoke-docx
-          path: dist/*.docx
+      - name: Office integration dependencies (no source mutations)
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libreoffice-writer python3-uno fonts-noto-cjk poppler-utils
+      - run: python -m pip install -e 'skills/gjb438c-md-first[test]'
+      - run: python -m pytest skills/gjb438c-md-first/tests/test_office_integration.py -q
+        env:
+          GJB_OFFICE_TESTS: '1'
+          PYTHONPATH: /usr/lib/python3/dist-packages
+      - name: Synthetic 300-page pagination and duplicate detector (not content acceptance)
+        run: python tools/stress_volume_gate.py

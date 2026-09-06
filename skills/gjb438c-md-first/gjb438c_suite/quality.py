@@ -14,7 +14,7 @@ ID_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_.-]{2,127}$")
 VAGUE_ACCEPTANCE_RE = re.compile(
     r"^(?:正常|正确|合理|友好|高效|满足要求|按需|适当|尽快|无异常|成功)[。.]?$", re.I
 )
-PLACEHOLDER_VALUE_RE = re.compile(r"(?:待补充|待确认|待定|\bTBD\b|\bTODO\b|XXXX+)", re.I)
+PLACEHOLDER_VALUE_RE = re.compile(r"(?:待提供|待测试执行|待补充|待确认|待定|\bTBD\b|\bTODO\b|XXXX+)", re.I)
 
 
 @dataclass(slots=True)
@@ -164,7 +164,7 @@ def _audit_source_references(
     source_ids: set[str],
     artifact_ids: set[str],
 ) -> None:
-    severity = _severity(report.profile)
+    severity = _severity(report.profile, review_error=True)
     for artifact in doc.artifacts:
         references: list[str] = []
         if artifact.kind == "requirement":
@@ -359,7 +359,8 @@ def _audit_common(doc: MarkdownDocument, item: DocumentType, report: AuditReport
                     artifact=artifact,
                 )
 
-    for kind in item.required_artifacts:
+    from .profiles import artifact_contracts_for
+    for kind in (item.required_artifacts if item.code == "SRS" else tuple(c["kind"] for c in artifact_contracts_for(item.code))):
         if kind not in kinds:
             _add(
                 report,
@@ -437,7 +438,7 @@ def _audit_srs(doc: MarkdownDocument, report: AuditReport) -> set[str]:
     for requirement_id in sorted(requirement_ids - traced):
         _add(report, _severity(profile, review_error=True), "SRS_REQUIREMENT_UNTRACED", f"需求 {requirement_id} 未进入追踪数据块")
     for requirement_id in sorted(traced - requirement_ids):
-        _add(report, "ERROR", "SRS_TRACE_UNKNOWN_REQUIREMENT", f"追踪数据块引用了不存在的需求 {requirement_id}")
+        _add(report, "WARN" if profile == "draft" and bool(PLACEHOLDER_VALUE_RE.search(requirement_id)) else "ERROR", "SRS_TRACE_UNKNOWN_REQUIREMENT", f"追踪数据块引用了不存在的需求 {requirement_id}")
 
     report.metrics["requirements"] = len(requirements)
     report.metrics["traced_requirements"] = len(traced & requirement_ids)

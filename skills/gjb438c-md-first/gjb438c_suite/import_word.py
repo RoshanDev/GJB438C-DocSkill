@@ -104,6 +104,7 @@ def _candidate_body(document_xml: bytes, styles_xml: bytes) -> str:
         raise ImportWordError("DOCX 缺少 document body")
     names = _style_names(styles_xml)
     active = False
+    body_id = None
     lines: list[str] = []
     for child in body:
         starts = child.xpath(
@@ -111,6 +112,7 @@ def _candidate_body(document_xml: bytes, styles_xml: bytes) -> str:
         )
         if starts:
             active = True
+            body_id = starts[0].get(f"{{{W}}}id")
         if not active:
             continue
         local = etree.QName(child).localname
@@ -128,7 +130,7 @@ def _candidate_body(document_xml: bytes, styles_xml: bytes) -> str:
         elif local == "tbl":
             lines.extend(_table_markdown(child))
             lines.append("")
-        if child.xpath(".//w:bookmarkEnd", namespaces=NS):
+        if child.xpath(".//w:bookmarkEnd[@w:id=$id]", namespaces=NS, id=body_id):
             break
     value = "\n".join(lines).strip()
     if not value:
@@ -160,6 +162,8 @@ def import_word(input_docx: str | Path, output_markdown: str | Path) -> ImportRe
                 metadata = {}
         else:
             metadata = {}
+        metadata.pop("approval", None)
+        metadata.setdefault("document", {})["status"] = "draft"
         metadata.setdefault("round_trip", {})
         metadata["round_trip"].update(
             {
@@ -175,5 +179,7 @@ def import_word(input_docx: str | Path, output_markdown: str | Path) -> ImportRe
         )
         value = f"---\n{front}\n---\n\n<!-- {warning} -->\n\n{candidate}"
     output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(value, encoding="utf-8")
+    # No platform newline translation: exact means byte-for-byte, not just
+    # equivalent text after universal-newline decoding.
+    output.write_bytes(value.encode("utf-8"))
     return ImportResult(output, exact, warning)

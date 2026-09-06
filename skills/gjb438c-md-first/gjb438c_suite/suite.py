@@ -267,64 +267,14 @@ def _doc_status(document: MarkdownDocument) -> str:
     return ""
 
 
-def _artifact_index(documents: dict[str, MarkdownDocument]) -> dict[str, set[str]]:
-    index: dict[str, set[str]] = {}
-    for document in documents.values():
-        for artifact in getattr(document, "artifacts", ()) or ():
-            kind = artifact_kind(artifact)
-            payload = artifact_mapping(artifact)
-            artifact_id = str(payload.get("id", "")).strip()
-            if kind and artifact_id:
-                index.setdefault(kind, set()).add(artifact_id)
-    return index
-
-
-def _reference_values(value: Any) -> list[str]:
-    if value is None:
-        return []
-    if isinstance(value, str):
-        return [item.strip() for item in re.split(r"[,;；\s]+", value) if item.strip()]
-    if isinstance(value, (list, tuple, set)):
-        result: list[str] = []
-        for item in value:
-            result.extend(_reference_values(item))
-        return result
-    return [str(value)]
-
-
 def _cross_reference_issues(
     report: SuiteAuditReport,
     documents: dict[str, MarkdownDocument],
 ) -> None:
-    index = _artifact_index(documents)
+    from .references import reference_issues
     for code, document in documents.items():
-        profile = load_profile_mapping(code)
-        contracts = {
-            str(item.get("kind", "")): item
-            for item in profile.get("artifact_contracts", [])
-            if isinstance(item, dict)
-        }
-        for artifact in getattr(document, "artifacts", ()) or ():
-            kind = artifact_kind(artifact)
-            contract = contracts.get(kind, {})
-            references = contract.get("references", {})
-            if not isinstance(references, dict):
-                continue
-            payload = artifact_mapping(artifact)
-            artifact_id = str(payload.get("id", "")).strip() or "<无ID>"
-            for field_name, target in references.items():
-                if not isinstance(target, str) or not target.startswith("baseline:"):
-                    continue
-                target_kind = target.split(":", 1)[1].strip()
-                for reference in _reference_values(payload.get(field_name)):
-                    if reference not in index.get(target_kind, set()):
-                        _add(
-                            report,
-                            "ERROR",
-                            "SUITE_REFERENCE_UNRESOLVED",
-                            f"{artifact_id}.{field_name} 引用 {reference}，但套件中不存在 gjb-{target_kind}",
-                            code,
-                        )
+        for issue in reference_issues(code, document, documents):
+            _add(report, issue["severity"], issue["code"], issue["message"], code)
 
 
 def audit_suite_manifest(
@@ -385,12 +335,21 @@ def audit_suite_manifest(
             documents[code] = parse_markdown(path)
         except (SuiteError, OSError, ValueError) as exc:
             _add(report, "ERROR", "SUITE_MARKDOWN_MISSING", str(exc), code)
-    identities = {str(d.metadata.get('software', {}).get('identifier') or '') for d in documents.values()}
+    identities = set()
+    for code, document in documents.items():
+        software = document.metadata.get('software')
+        if not isinstance(software, dict):
+            _add(report, 'ERROR', 'SUITE_SOFTWARE_METADATA_INVALID', 'software must be a mapping', code)
+            identities.add('')
+        else:
+            identities.add(str(software.get('identifier') or ''))
     if len(identities) != 1 or not all(identities):
         _add(report, 'ERROR', 'SUITE_IDENTITY_MISMATCH', 'selected documents must belong to one software identifier')
     candidates = set()
     for code in required:
         entry = entries.get(code, {})
+        if not isinstance(entry, dict):
+            entry = {}
         result = SuiteDocumentResult(code, str(paths.get(code, "")), str(entry.get("docx", "")), str(entry.get("volume_report", "")))
         report.documents.append(result)
         document = documents.get(code)
@@ -459,7 +418,23 @@ def audit_suite_manifest(
         if result.document_type not in usable:
             result.passed = False
             _add(report, "ERROR", "SUITE_REQUIRED_BASELINE_NOT_AUDITED", "document or its required baseline failed this audit run", result.document_type)
-    _cross_reference_issues(report, {code: documents[code] for code in usable})
+    # Re-evaluate reference scope whenever a failed baseline is removed. This
+    # also prevents a required_any fallback from retaining checks against the
+    # previously selected (now failed) baseline.
+    while True:
+        previous = set(usable)
+        _cross_reference_issues(report, {code: documents[code] for code in usable})
+        usable -= {e.document_type for e in report.errors if e.document_type}
+        for code in list(usable):
+            deps = load_profile_mapping(code).get("baselines", {})
+            must = {get_document_type(str(x)).code for x in deps.get("required", [])}
+            any_of = {get_document_type(str(x)).code for x in deps.get("required_any", [])}
+            if not must <= usable or (any_of and not any_of & usable):
+                usable.remove(code)
+                _add(report, "ERROR", "SUITE_REQUIRED_BASELINE_NOT_AUDITED",
+                     "a selected baseline failed reference/coverage validation", code)
+        if previous == usable:
+            break
     for result in report.documents:
         if any(e.document_type in {None, result.document_type} for e in report.errors):
             result.passed = False

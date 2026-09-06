@@ -1,7 +1,9 @@
 """The single public parser and protected publication path (no legacy dispatch)."""
 from __future__ import annotations
 import argparse
+import hashlib
 import json
+import re
 from pathlib import Path
 import sys
 import tempfile
@@ -88,10 +90,12 @@ def _audit_all(args):
     provenance = {'source_sha256': sha256_file(source), 'profile_sha256': sha256_file(profile_directory() / f'{code.lower()}.yaml'), 'baseline_sha256': hashes, 'tool_version': __version__}
     if args.source_register:
         register = Path(args.source_register)
-        text = register.read_text(encoding='utf-8')
-        provenance['source_register_sha256'] = sha256_file(register)
+        register_bytes = register.read_bytes()
+        text = register_bytes.decode('utf-8')
+        provenance['source_register_sha256'] = hashlib.sha256(register_bytes).hexdigest()
         for entry in document.metadata.get('sources', []):
-            if isinstance(entry, dict) and str(entry.get('id', '')) not in text:
+            if isinstance(entry, dict) and not re.search(
+                    r'(?<![\w-])' + re.escape(str(entry.get('id', ''))) + r'(?![\w-])', text):
                 issues.append({'severity': 'ERROR', 'code': 'SOURCE_REGISTER_MISMATCH', 'message': str(entry.get('id'))})
     payload = {'passed': combined.passed and not any(i['severity'] == 'ERROR' for i in issues), 'document_type': code, 'tier': tier, 'profile': args.profile,
                'approved_for_release': args.profile == 'release' and combined.passed and not any(i['severity'] == 'ERROR' for i in issues) and not approval_issues(document), 'content': combined.as_dict(), 'preflight': issues, 'provenance': provenance}
@@ -148,6 +152,8 @@ def _render(args):
         current_bases = load_baselines(args.baseline_dir, args.baseline_srs)
         if any(k not in current_bases or sha256_file(current_bases[k]) != h for k, h in payload['provenance']['baseline_sha256'].items()):
             raise PublicationError('baseline changed during render; no files published')
+        if args.source_register and sha256_file(args.source_register) != payload['provenance'].get('source_register_sha256'):
+            raise PublicationError('source register changed during render; no files published')
         staged = {}
         for kind, data in reports.items():
             file = folder / f'{kind}.json'; file.write_text(json.dumps(data, ensure_ascii=False, indent=2, default=str), encoding='utf-8')

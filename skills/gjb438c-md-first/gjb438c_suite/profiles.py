@@ -119,6 +119,6 @@ def load_profile(code: str) -> dict[str, Any]:
 
 
 def heading_outline(code: str):
-    from .markdown_doc import Heading
-    return [Heading(int(h["level"]), str(h["title"]), 0, h.get("number"))
+    from .markdown_doc import Heading, normalize_outline_heading
+    return [normalize_outline_heading(Heading(int(h["level"]), str(h["title"]), 0, h.get("number")))
             for h in load_profile(code)["outline"]]

@@ -7,6 +7,7 @@ from .markdown_doc import parse_markdown
 from .profile_quality import audit_markdown_with_profile, load_profile_mapping
 from .registry import get_document_type
 from .trust import approval_issues
+from .references import reference_issues
 from .volume import markdown_volume_issues, resolve_tier, sha256_file
 
 
@@ -71,6 +72,11 @@ def validate_baselines(source: str | Path, phase: str, paths: Mapping[str, Path]
         if errors:
             invalid[code] = '; '.join(errors)
             return False
+        scoped = {key: parse_markdown(paths[key]) for key in valid}
+        ref_errors = reference_issues(code, baseline, scoped)
+        if ref_errors:
+            invalid[code] = '; '.join(x['message'] for x in ref_errors)
+            return False
         valid[code] = sha256_file(path)
         return True
 
@@ -87,4 +93,6 @@ def validate_baselines(source: str | Path, phase: str, paths: Mapping[str, Path]
 
     messages = requirements(root_code, (root_code,))
     severity = 'WARN' if phase == 'draft' else 'ERROR'
-    return ([{'severity': severity, 'code': 'BASELINE_NOT_AUDITED', 'message': m} for m in messages], valid)
+    issues = [{'severity': severity, 'code': 'BASELINE_NOT_AUDITED', 'message': m} for m in messages]
+    issues.extend(reference_issues(root_code, root, {code: parse_markdown(paths[code]) for code in valid}, severity=severity))
+    return issues, valid

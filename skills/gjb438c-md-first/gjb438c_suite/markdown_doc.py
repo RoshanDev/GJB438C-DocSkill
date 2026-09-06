@@ -9,7 +9,7 @@ import yaml
 from docx import Document
 from docx.oxml.ns import qn
 
-FRONT_MATTER_RE = re.compile(r"\A---\s*\n(?P<yaml>.*?)\n---\s*\n", re.DOTALL)
+FRONT_MATTER_RE = re.compile(r"\A\ufeff?---\s*\n(?P<yaml>.*?)\n---\s*\n", re.DOTALL)
 HEADING_RE = re.compile(r"^(?P<marks>#{1,9})\s+(?P<title>.+?)\s*$", re.MULTILINE)
 FENCE_RE = re.compile(
     r"^```(?P<lang>gjb-[a-z0-9_-]+)\s*\n(?P<body>.*?)^```\s*$",
@@ -119,7 +119,9 @@ def split_front_matter(raw: str) -> tuple[dict[str, Any], str, int, list[str]]:
 
 def parse_markdown(path: str | Path) -> MarkdownDocument:
     source_path = Path(path)
-    raw = source_path.read_text(encoding="utf-8")
+    # Keep the exact UTF-8 bytes (including CRLF/BOM) for provenance and
+    # unchanged DOCX round trips. Text-mode reads silently normalize newlines.
+    raw = source_path.read_bytes().decode("utf-8")
     metadata, body, body_offset, errors = split_front_matter(raw)
 
     headings = [
@@ -170,6 +172,28 @@ def strip_quality_blocks(body: str) -> str:
         visible,
     )
     return visible.strip() + "\n"
+
+
+CLAUSE_TITLE_RE = re.compile(
+    r"^\s*(?P<number>\d+(?:\.\s*(?:\d+|[xXyY]))*)[.、。]?\s*(?P<title>.*)$"
+)
+
+
+def split_clause_title(title: str) -> tuple[str | None, str]:
+    """Split a template clause such as 3.10.1标题, 4. X（名称） or 7.注释."""
+    match = CLAUSE_TITLE_RE.match(title)
+    if not match:
+        return None, title.strip()
+    return re.sub(r"\s+", "", match["number"]), match["title"].strip()
+
+
+def normalize_outline_heading(heading: Heading) -> Heading:
+    embedded, title = split_clause_title(heading.title)
+    number = str(heading.number) if heading.number is not None else embedded
+    if heading.number is not None and embedded != number:
+        title = heading.title.strip()
+    level = number.count(".") + 1 if number else heading.level
+    return Heading(min(max(level, 1), 9), title, heading.line, number)
 
 
 def strip_number_prefix(title: str) -> str:
@@ -461,7 +485,8 @@ def render_skeleton(
     yaml_text = yaml.safe_dump(metadata, allow_unicode=True, sort_keys=False).rstrip()
     lines = ["---", yaml_text, "---", "", f"# {metadata['document']['title']}", ""]
     counters = [0] * 9
-    for heading in outline:
+    for entry in outline:
+        heading = normalize_outline_heading(entry)
         level = min(max(heading.level, 1), 9)
         number = heading.number
         if number is None and not re.match(r"^(附录|参考文献|索引)", heading.title):
@@ -469,7 +494,12 @@ def render_skeleton(
             for index in range(level, len(counters)):
                 counters[index] = 0
             number = ".".join(str(value) for value in counters[:level] if value)
-        marks = "#" * min(level, 6)
+        if number is not None:
+            for index, value in enumerate(number.split(".")):
+                counters[index] = int(value) if value.isdigit() else 0
+            for index in range(level, len(counters)):
+                counters[index] = 0
+        marks = "#" * level
         label = f"{number} {heading.title}" if number else heading.title
         lines.extend([f"{marks} {label}", "", "待补充。", ""])
     lines.extend(["# 附录A 质量门禁数据块", ""])

@@ -7,7 +7,9 @@ def main():
     root=Path(__file__).resolve().parents[1]
     with tempfile.TemporaryDirectory(prefix='gjb-wheel-') as folder:
         work=Path(folder);wheels=work/'wheels';target=work/'installed'
-        subprocess.run([sys.executable,'-m','pip','wheel','--no-deps','--no-build-isolation','-w',str(wheels),str(root/'skills/gjb438c-md-first')],check=True)
+        # Honor pyproject.toml build-system requirements even when the host
+        # interpreter (notably Python 3.12) does not include setuptools.
+        subprocess.run([sys.executable,'-m','pip','wheel','--no-deps','-w',str(wheels),str(root/'skills/gjb438c-md-first')],check=True)
         wheel=next(wheels.glob('*.whl'))
         subprocess.run([sys.executable,'-m','pip','install','--no-deps','--no-index','--target',str(target),str(wheel)],check=True)
         env=dict(os.environ,PYTHONPATH=str(target))

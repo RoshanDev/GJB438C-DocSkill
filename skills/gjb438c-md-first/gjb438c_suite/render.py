@@ -33,6 +33,7 @@ BOOKMARK_NAME = "GJB_BODY"
 DOCVAR_PREFIX = "GJB438C_SOURCE_"
 DOCVAR_HASH = "GJB438C_BODY_TEXT_SHA256"
 DOCVAR_SOURCE_HASH = "GJB438C_SOURCE_SHA256"
+DOCVAR_FRONT_HASH = "GJB438C_FRONT_TEXT_SHA256"
 CAPTION_RE = re.compile(r"^(?:表|图)\s*[A-Za-z0-9一二三四五六七八九十附录.-]+(?:\s+|、).+")
 HEADING_RE = re.compile(r"^(#{1,9})\s+(.+?)\s*$")
 IMAGE_RE = re.compile(r"^!\[(?P<alt>[^]]*)\]\((?P<path>[^ )]+)(?:\s+\"(?P<title>[^\"]*)\")?\)\s*$")
@@ -543,6 +544,39 @@ def _normalized_bookmark_text(document_xml: bytes) -> str:
     return re.sub(r"\s+", " ", " ".join(pieces)).strip()
 
 
+def _normalized_front_matter_text(document_xml: bytes) -> str:
+    """Bind visible cover/signature/revision values, excluding the TOC cache.
+
+    The TOC field may become an SDT after Office refresh. Locate its top-level
+    body child, not a fixed paragraph index or page estimate. Concatenate runs
+    within each paragraph so innocuous Word run splitting does not break the
+    binding; paragraph boundaries and cell text remain significant.
+    """
+    root = etree.fromstring(document_xml)
+    body = root.find("./w:body", NS)
+    if body is None:
+        return ""
+    toc_fields = [node for node in body.xpath(".//w:instrText", namespaces=NS)
+                  if re.match(r"^\s*TOC(?:\s|$)", node.text or "")]
+    if len(toc_fields) != 1:
+        return ""
+    boundary = toc_fields[0]
+    while boundary.getparent() is not body:
+        boundary = boundary.getparent()
+        if boundary is None:
+            return ""
+    paragraphs = []
+    for child in body:
+        if child is boundary:
+            break
+        for paragraph in child.iter(f"{{{W}}}p"):
+            text = "".join(paragraph.xpath(".//w:t/text()", namespaces=NS))
+            text = re.sub(r"\s+", " ", text).strip()
+            if text:
+                paragraphs.append(text)
+    return json.dumps(paragraphs, ensure_ascii=False) if paragraphs else ""
+
+
 def _patch_settings_with_source(docx_path: Path, markdown_source: str) -> None:
     with tempfile.TemporaryDirectory(prefix="gjb438c-docvars-") as temp_name:
         temp = Path(temp_name)
@@ -561,7 +595,7 @@ def _patch_settings_with_source(docx_path: Path, markdown_source: str) -> None:
             doc_vars = etree.SubElement(settings_root, f"{{{W}}}docVars")
         for variable in list(doc_vars):
             name = variable.get(f"{{{W}}}name", "")
-            if name.startswith(DOCVAR_PREFIX) or name in {DOCVAR_HASH, DOCVAR_SOURCE_HASH}:
+            if name.startswith(DOCVAR_PREFIX) or name in {DOCVAR_HASH, DOCVAR_SOURCE_HASH, DOCVAR_FRONT_HASH}:
                 doc_vars.remove(variable)
 
         compressed = gzip.compress(markdown_source.encode("utf-8"), compresslevel=9)
@@ -573,8 +607,10 @@ def _patch_settings_with_source(docx_path: Path, markdown_source: str) -> None:
             variable.set(f"{{{W}}}val", chunk)
         document_xml = (temp / "word" / "document.xml").read_bytes()
         body_text = _normalized_bookmark_text(document_xml)
+        front_text = _normalized_front_matter_text(document_xml)
         for name, value in (
             (DOCVAR_HASH, sha256(body_text.encode("utf-8")).hexdigest()),
+            (DOCVAR_FRONT_HASH, sha256(front_text.encode("utf-8")).hexdigest() if front_text else ""),
             (DOCVAR_SOURCE_HASH, sha256(markdown_source.encode("utf-8")).hexdigest()),
         ):
             variable = etree.SubElement(doc_vars, f"{{{W}}}docVar")

@@ -318,14 +318,18 @@ def _body_start(reader: PdfReader, docx: Path) -> int:
 
 def _binding(document: MarkdownDocument, docx: Path) -> None:
     from .import_word import _doc_vars, _embedded_source
-    from .render import DOCVAR_HASH, _normalized_bookmark_text
+    from .render import DOCVAR_HASH, DOCVAR_FRONT_HASH, _normalized_bookmark_text, _normalized_front_matter_text
     with ZipFile(docx) as archive:
         variables = _doc_vars(archive.read('word/settings.xml'))
-        body = _normalized_bookmark_text(archive.read('word/document.xml'))
+        document_xml = archive.read('word/document.xml')
+        body = _normalized_bookmark_text(document_xml)
+        front = _normalized_front_matter_text(document_xml)
     if _embedded_source(variables) != document.raw:
         raise VolumeError('DOCX 嵌入基线与当前 Markdown 不一致')
     if variables.get(DOCVAR_HASH) != sha256_text(body):
         raise VolumeError('DOCX 可见正文已修改；请回流并重新审核')
+    if not front or variables.get(DOCVAR_FRONT_HASH) != sha256_text(front):
+        raise VolumeError('DOCX 前三页已修改或缺少绑定；请核对首页、签字和变更记录后重新生成')
 
 
 def _document_floor(document, code, tier, override):

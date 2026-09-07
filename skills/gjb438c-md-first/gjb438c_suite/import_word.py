@@ -12,6 +12,7 @@ from zipfile import ZipFile
 from lxml import etree
 import yaml
 
+from .body_binding import DOCVAR_STRUCTURE_HASH, body_structure_hash
 from .markdown_doc import split_front_matter
 from .render import (
     BOOKMARK_NAME,
@@ -149,6 +150,7 @@ def import_word(input_docx: str | Path, output_markdown: str | Path) -> ImportRe
         document_xml = archive.read("word/document.xml")
         settings_xml = archive.read("word/settings.xml")
         styles_xml = archive.read("word/styles.xml")
+        structure_hash = body_structure_hash(archive)
     variables = _doc_vars(settings_xml)
     embedded = _embedded_source(variables)
     current_hash = sha256(_normalized_bookmark_text(document_xml).encode("utf-8")).hexdigest()
@@ -157,7 +159,9 @@ def import_word(input_docx: str | Path, output_markdown: str | Path) -> ImportRe
     source_verified = embedded is not None and variables.get(DOCVAR_SOURCE_HASH) == sha256(embedded.encode("utf-8")).hexdigest()
     front_text = _normalized_front_matter_text(document_xml)
     front_verified = bool(front_text) and variables.get(DOCVAR_FRONT_HASH) == sha256(front_text.encode("utf-8")).hexdigest()
-    exact = source_verified and front_verified and stored_hash == current_hash
+    structure_verified = bool(structure_hash) and variables.get(DOCVAR_STRUCTURE_HASH) == structure_hash
+    body_verified = stored_hash == current_hash and structure_verified
+    exact = source_verified and front_verified and body_verified
     warning = None
     if exact:
         value = embedded
@@ -168,7 +172,7 @@ def import_word(input_docx: str | Path, output_markdown: str | Path) -> ImportRe
             metadata, embedded_body, _, errors = split_front_matter(embedded)
             if errors:
                 metadata = {}
-            elif stored_hash == current_hash:
+            elif body_verified:
                 # A cover-only edit does not invalidate the verified body.
                 # Retain its fences, links, tables and stable evidence verbatim
                 # instead of reconstructing them from rendered paragraphs.
@@ -188,6 +192,7 @@ def import_word(input_docx: str | Path, output_markdown: str | Path) -> ImportRe
                 "exact": False,
                 "requires_review": True,
                 "body_preserved": body_preserved,
+                "body_structure_verified": structure_verified,
             }
         )
         if not front_verified:

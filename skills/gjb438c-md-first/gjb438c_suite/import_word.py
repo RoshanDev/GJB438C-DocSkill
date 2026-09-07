@@ -162,13 +162,22 @@ def import_word(input_docx: str | Path, output_markdown: str | Path) -> ImportRe
     if exact:
         value = embedded
     else:
-        candidate = _candidate_body(document_xml, styles_xml)
+        candidate = None
+        body_preserved = False
         if source_verified:
-            metadata, _, _, errors = split_front_matter(embedded)
+            metadata, embedded_body, _, errors = split_front_matter(embedded)
             if errors:
                 metadata = {}
+            elif stored_hash == current_hash:
+                # A cover-only edit does not invalidate the verified body.
+                # Retain its fences, links, tables and stable evidence verbatim
+                # instead of reconstructing them from rendered paragraphs.
+                candidate = embedded_body
+                body_preserved = True
         else:
             metadata = {}
+        if candidate is None:
+            candidate = _candidate_body(document_xml, styles_xml)
         metadata.pop("approval", None)
         metadata.setdefault("document", {})["status"] = "draft"
         if not isinstance(metadata.get("round_trip"), dict):
@@ -178,6 +187,7 @@ def import_word(input_docx: str | Path, output_markdown: str | Path) -> ImportRe
                 "source_docx": source.name,
                 "exact": False,
                 "requires_review": True,
+                "body_preserved": body_preserved,
             }
         )
         if not front_verified:
@@ -188,7 +198,8 @@ def import_word(input_docx: str | Path, output_markdown: str | Path) -> ImportRe
             "Word 前三页、正文或嵌入的 Markdown 基线校验不一致；"
             "已生成候选 Markdown，必须重新审核结构化证据块和追踪关系。"
         )
-        value = f"---\n{front}\n---\n\n<!-- {warning} -->\n\n{candidate}"
+        value = (f"---\n{front}\n---\n{candidate}" if body_preserved else
+                 f"---\n{front}\n---\n\n<!-- {warning} -->\n\n{candidate}")
     output.parent.mkdir(parents=True, exist_ok=True)
     # No platform newline translation: exact means byte-for-byte, not just
     # equivalent text after universal-newline decoding.

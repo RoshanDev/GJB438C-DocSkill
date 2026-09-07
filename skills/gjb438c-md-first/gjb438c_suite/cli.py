@@ -72,6 +72,14 @@ def _mapping(path):
     return value
 
 
+def _bind_audit_input(hashes, path, digest):
+    # Keep roles distinct before reducing them to a path-keyed hash map. In
+    # particular a late source-register read must never replace the snapshot
+    # already captured for the source/profile/baseline, even via an alias.
+    resolved = distinct_paths([*hashes, path])[-1]
+    hashes[str(resolved)] = digest
+
+
 def _audit_all(args):
     source = Path(args.input)
     document = parse_markdown(source)
@@ -86,8 +94,11 @@ def _audit_all(args):
     floor = max([minimum_body_pages(code, tier), *floors])
     baselines = load_baselines(args.baseline_dir, args.baseline_srs)
     baseline_snapshots = {k: sha256_file(v) for k, v in baselines.items()}
-    input_hashes = {str(source.resolve()): source_hash, str(profile_path.resolve()): profile_hash}
-    input_hashes.update({str(path.resolve()): baseline_snapshots[k] for k, path in baselines.items()})
+    input_hashes = {}
+    _bind_audit_input(input_hashes, source, source_hash)
+    _bind_audit_input(input_hashes, profile_path, profile_hash)
+    for key, path in baselines.items():
+        _bind_audit_input(input_hashes, path, baseline_snapshots[key])
     srs = baselines.get('SRS' if code == 'SDD' else 'SSS') if code in {'SDD', 'SSDD'} else None
     combined = audit_markdown_with_profile(source, profile=args.profile, document_type=code, baseline_srs=srs, tier=tier)
     issues = markdown_volume_issues(document, code, tier, args.profile, min_body_pages_override=floor)
@@ -102,7 +113,7 @@ def _audit_all(args):
         register_bytes = register.read_bytes()
         text = register_bytes.decode('utf-8')
         provenance['source_register_sha256'] = hashlib.sha256(register_bytes).hexdigest()
-        input_hashes[str(register.resolve())] = provenance['source_register_sha256']
+        _bind_audit_input(input_hashes, register, provenance['source_register_sha256'])
         for entry in document.metadata.get('sources', []):
             if isinstance(entry, dict) and not re.search(
                     r'(?<![\w-])' + re.escape(str(entry.get('id', ''))) + r'(?![\w-])', text):

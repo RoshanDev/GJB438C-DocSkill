@@ -1,1 +1,0 @@
-A pull request is mergeable only after current-head CI passes and the latest Codex review on that exact head reports no findings. Any new finding blocks merge and starts another fix/test/review cycle.

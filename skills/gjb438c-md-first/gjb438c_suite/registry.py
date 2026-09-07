@@ -101,7 +101,7 @@ def default_template_root() -> Path:
 
 
 def default_front_matter_template() -> Path:
-    return skill_root() / "templates" / "front-matter" / "standard-front-matter.docx"
+    return Path(__file__).resolve().parent / "data" / "front-matter" / "standard-front-matter.docx"
 
 
 def resolve_template(document_type: str | DocumentType, template_root: Path | None = None) -> Path:

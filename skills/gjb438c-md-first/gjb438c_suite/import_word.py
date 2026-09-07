@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 from dataclasses import dataclass
 import gzip
+import json
 from hashlib import sha256
 from pathlib import Path
 import re
@@ -11,12 +12,16 @@ from zipfile import ZipFile
 from lxml import etree
 import yaml
 
+from .body_binding import DOCVAR_STRUCTURE_HASH, body_structure_hash
 from .markdown_doc import split_front_matter
 from .render import (
     BOOKMARK_NAME,
     DOCVAR_HASH,
+    DOCVAR_SOURCE_HASH,
+    DOCVAR_FRONT_HASH,
     DOCVAR_PREFIX,
     _normalized_bookmark_text,
+    _normalized_front_matter_text,
 )
 
 W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
@@ -104,6 +109,7 @@ def _candidate_body(document_xml: bytes, styles_xml: bytes) -> str:
         raise ImportWordError("DOCX 缺少 document body")
     names = _style_names(styles_xml)
     active = False
+    body_id = None
     lines: list[str] = []
     for child in body:
         starts = child.xpath(
@@ -111,6 +117,7 @@ def _candidate_body(document_xml: bytes, styles_xml: bytes) -> str:
         )
         if starts:
             active = True
+            body_id = starts[0].get(f"{{{W}}}id")
         if not active:
             continue
         local = etree.QName(child).localname
@@ -128,7 +135,7 @@ def _candidate_body(document_xml: bytes, styles_xml: bytes) -> str:
         elif local == "tbl":
             lines.extend(_table_markdown(child))
             lines.append("")
-        if child.xpath(".//w:bookmarkEnd", namespaces=NS):
+        if child.xpath(".//w:bookmarkEnd[@w:id=$id]", namespaces=NS, id=body_id):
             break
     value = "\n".join(lines).strip()
     if not value:
@@ -143,37 +150,63 @@ def import_word(input_docx: str | Path, output_markdown: str | Path) -> ImportRe
         document_xml = archive.read("word/document.xml")
         settings_xml = archive.read("word/settings.xml")
         styles_xml = archive.read("word/styles.xml")
+        structure_hash = body_structure_hash(archive)
     variables = _doc_vars(settings_xml)
     embedded = _embedded_source(variables)
     current_hash = sha256(_normalized_bookmark_text(document_xml).encode("utf-8")).hexdigest()
     stored_hash = variables.get(DOCVAR_HASH)
 
-    exact = embedded is not None and stored_hash == current_hash
+    source_verified = embedded is not None and variables.get(DOCVAR_SOURCE_HASH) == sha256(embedded.encode("utf-8")).hexdigest()
+    front_text = _normalized_front_matter_text(document_xml)
+    front_verified = bool(front_text) and variables.get(DOCVAR_FRONT_HASH) == sha256(front_text.encode("utf-8")).hexdigest()
+    structure_verified = bool(structure_hash) and variables.get(DOCVAR_STRUCTURE_HASH) == structure_hash
+    body_verified = stored_hash == current_hash and structure_verified
+    exact = source_verified and front_verified and body_verified
     warning = None
     if exact:
         value = embedded
     else:
-        candidate = _candidate_body(document_xml, styles_xml)
-        if embedded:
-            metadata, _, _, errors = split_front_matter(embedded)
+        candidate = None
+        body_preserved = False
+        if source_verified:
+            metadata, embedded_body, _, errors = split_front_matter(embedded)
             if errors:
                 metadata = {}
+            elif body_verified:
+                # A cover-only edit does not invalidate the verified body.
+                # Retain its fences, links, tables and stable evidence verbatim
+                # instead of reconstructing them from rendered paragraphs.
+                candidate = embedded_body
+                body_preserved = True
         else:
             metadata = {}
-        metadata.setdefault("round_trip", {})
+        if candidate is None:
+            candidate = _candidate_body(document_xml, styles_xml)
+        metadata.pop("approval", None)
+        metadata.setdefault("document", {})["status"] = "draft"
+        if not isinstance(metadata.get("round_trip"), dict):
+            metadata["round_trip"] = {}
         metadata["round_trip"].update(
             {
                 "source_docx": source.name,
                 "exact": False,
                 "requires_review": True,
+                "body_preserved": body_preserved,
+                "body_structure_verified": structure_verified,
             }
         )
+        if not front_verified:
+            metadata["round_trip"]["front_matter_review_required"] = True
+            metadata["round_trip"]["observed_front_paragraphs"] = json.loads(front_text) if front_text else []
         front = yaml.safe_dump(metadata, allow_unicode=True, sort_keys=False).rstrip()
         warning = (
-            "Word 正文已变化，嵌入的 Markdown 基线不再与可见正文一致；"
+            "Word 前三页、正文或嵌入的 Markdown 基线校验不一致；"
             "已生成候选 Markdown，必须重新审核结构化证据块和追踪关系。"
         )
-        value = f"---\n{front}\n---\n\n<!-- {warning} -->\n\n{candidate}"
+        value = (f"---\n{front}\n---\n{candidate}" if body_preserved else
+                 f"---\n{front}\n---\n\n<!-- {warning} -->\n\n{candidate}")
     output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(value, encoding="utf-8")
+    # No platform newline translation: exact means byte-for-byte, not just
+    # equivalent text after universal-newline decoding.
+    output.write_bytes(value.encode("utf-8"))
     return ImportResult(output, exact, warning)

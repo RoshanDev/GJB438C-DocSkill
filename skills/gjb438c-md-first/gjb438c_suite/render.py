@@ -22,6 +22,7 @@ from docx.oxml.ns import qn
 from docx.shared import Cm, Pt
 from lxml import etree
 
+from .body_binding import DOCVAR_STRUCTURE_HASH, body_structure_hash
 from .front_matter import FrontMatterError, render_front_matter
 from .markdown_doc import MarkdownDocument, nested_get, parse_markdown
 from .quality import AuditReport, audit_markdown
@@ -33,6 +34,7 @@ BOOKMARK_NAME = "GJB_BODY"
 DOCVAR_PREFIX = "GJB438C_SOURCE_"
 DOCVAR_HASH = "GJB438C_BODY_TEXT_SHA256"
 DOCVAR_SOURCE_HASH = "GJB438C_SOURCE_SHA256"
+DOCVAR_FRONT_HASH = "GJB438C_FRONT_TEXT_SHA256"
 CAPTION_RE = re.compile(r"^(?:表|图)\s*[A-Za-z0-9一二三四五六七八九十附录.-]+(?:\s+|、).+")
 HEADING_RE = re.compile(r"^(#{1,9})\s+(.+?)\s*$")
 IMAGE_RE = re.compile(r"^!\[(?P<alt>[^]]*)\]\((?P<path>[^ )]+)(?:\s+\"(?P<title>[^\"]*)\")?\)\s*$")
@@ -543,10 +545,44 @@ def _normalized_bookmark_text(document_xml: bytes) -> str:
     return re.sub(r"\s+", " ", " ".join(pieces)).strip()
 
 
+def _normalized_front_matter_text(document_xml: bytes) -> str:
+    """Bind visible cover/signature/revision values, excluding the TOC cache.
+
+    The TOC field may become an SDT after Office refresh. Locate its top-level
+    body child, not a fixed paragraph index or page estimate. Concatenate runs
+    within each paragraph so innocuous Word run splitting does not break the
+    binding; paragraph boundaries and cell text remain significant.
+    """
+    root = etree.fromstring(document_xml)
+    body = root.find("./w:body", NS)
+    if body is None:
+        return ""
+    toc_fields = [node for node in body.xpath(".//w:instrText", namespaces=NS)
+                  if re.match(r"^\s*TOC(?:\s|$)", node.text or "")]
+    if len(toc_fields) != 1:
+        return ""
+    boundary = toc_fields[0]
+    while boundary.getparent() is not body:
+        boundary = boundary.getparent()
+        if boundary is None:
+            return ""
+    paragraphs = []
+    for child in body:
+        if child is boundary:
+            break
+        for paragraph in child.iter(f"{{{W}}}p"):
+            text = "".join(paragraph.xpath(".//w:t/text()", namespaces=NS))
+            text = re.sub(r"\s+", " ", text).strip()
+            if text:
+                paragraphs.append(text)
+    return json.dumps(paragraphs, ensure_ascii=False) if paragraphs else ""
+
+
 def _patch_settings_with_source(docx_path: Path, markdown_source: str) -> None:
     with tempfile.TemporaryDirectory(prefix="gjb438c-docvars-") as temp_name:
         temp = Path(temp_name)
         with ZipFile(docx_path) as archive:
+            structure_hash = body_structure_hash(archive)
             archive.extractall(temp)
         settings_path = temp / "word" / "settings.xml"
         settings_tree = etree.parse(str(settings_path))
@@ -561,7 +597,7 @@ def _patch_settings_with_source(docx_path: Path, markdown_source: str) -> None:
             doc_vars = etree.SubElement(settings_root, f"{{{W}}}docVars")
         for variable in list(doc_vars):
             name = variable.get(f"{{{W}}}name", "")
-            if name.startswith(DOCVAR_PREFIX) or name in {DOCVAR_HASH, DOCVAR_SOURCE_HASH}:
+            if name.startswith(DOCVAR_PREFIX) or name in {DOCVAR_HASH, DOCVAR_SOURCE_HASH, DOCVAR_FRONT_HASH, DOCVAR_STRUCTURE_HASH}:
                 doc_vars.remove(variable)
 
         compressed = gzip.compress(markdown_source.encode("utf-8"), compresslevel=9)
@@ -573,8 +609,11 @@ def _patch_settings_with_source(docx_path: Path, markdown_source: str) -> None:
             variable.set(f"{{{W}}}val", chunk)
         document_xml = (temp / "word" / "document.xml").read_bytes()
         body_text = _normalized_bookmark_text(document_xml)
+        front_text = _normalized_front_matter_text(document_xml)
         for name, value in (
             (DOCVAR_HASH, sha256(body_text.encode("utf-8")).hexdigest()),
+            (DOCVAR_FRONT_HASH, sha256(front_text.encode("utf-8")).hexdigest() if front_text else ""),
+            (DOCVAR_STRUCTURE_HASH, structure_hash),
             (DOCVAR_SOURCE_HASH, sha256(markdown_source.encode("utf-8")).hexdigest()),
         ):
             variable = etree.SubElement(doc_vars, f"{{{W}}}docVar")
@@ -590,6 +629,32 @@ def _patch_settings_with_source(docx_path: Path, markdown_source: str) -> None:
                 if file.is_file():
                     archive.write(file, file.relative_to(temp).as_posix())
         rebuilt.replace(docx_path)
+
+
+def resolve_front_template(
+    markdown: MarkdownDocument, front_template: str | Path | None = None,
+) -> Path:
+    """Resolve the one template used by both the CLI guard and the renderer."""
+    if front_template is not None:
+        return Path(front_template).absolute()
+    configured = nested_get(markdown.metadata, "front_matter.template")
+    if configured:
+        candidate = Path(str(configured))
+        candidates = [candidate] if candidate.is_absolute() else [
+            markdown.path.parent / candidate,
+            Path(__file__).resolve().parents[1] / candidate,
+        ]
+        # Historical skeletons use this exact package-relative alias. Wheels
+        # store the same bundled master under data/, not the source-tree layout.
+        # Preserve a real project-relative override first; never fall back for
+        # an arbitrary missing custom template or an absolute configured path.
+        if not candidate.is_absolute() and candidate.as_posix() == "templates/front-matter/standard-front-matter.docx":
+            candidates.append(default_front_matter_template())
+        for path in candidates:
+            if path.is_file():
+                return path.absolute()
+        raise RenderError(f"configured front template does not exist: {configured}")
+    return default_front_matter_template().absolute()
 
 
 def render_document(
@@ -608,18 +673,7 @@ def render_document(
         raise RenderError(report.to_text())
     release = profile == "release"
 
-    template = Path(front_template) if front_template else default_front_matter_template()
-    configured = nested_get(markdown.metadata, "front_matter.template")
-    if front_template is None and configured:
-        candidate = Path(str(configured))
-        if not candidate.is_absolute():
-            for base in (source.parent, Path(__file__).resolve().parents[1]):
-                resolved = (base / candidate).resolve()
-                if resolved.is_file():
-                    candidate = resolved
-                    break
-        if candidate.is_file():
-            template = candidate
+    template = resolve_front_template(markdown, front_template)
 
     with tempfile.TemporaryDirectory(prefix="gjb438c-render-") as temp_name:
         temp = Path(temp_name)
@@ -651,6 +705,8 @@ def render_document(
         first, last = _render_markdown_body(
             document, markdown, styles, release=release
         )
+        from .evidence import append_evidence
+        last = append_evidence(document, markdown, styles) or last
         _bookmark_start(first)
         _bookmark_end(last)
 

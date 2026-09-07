@@ -9,7 +9,7 @@ import yaml
 from docx import Document
 from docx.oxml.ns import qn
 
-FRONT_MATTER_RE = re.compile(r"\A---\s*\n(?P<yaml>.*?)\n---\s*\n", re.DOTALL)
+FRONT_MATTER_RE = re.compile(r"\A\ufeff?---\s*\n(?P<yaml>.*?)\n---\s*\n", re.DOTALL)
 HEADING_RE = re.compile(r"^(?P<marks>#{1,9})\s+(?P<title>.+?)\s*$", re.MULTILINE)
 FENCE_RE = re.compile(
     r"^```(?P<lang>gjb-[a-z0-9_-]+)\s*\n(?P<body>.*?)^```\s*$",
@@ -20,7 +20,7 @@ ANY_FENCE_RE = re.compile(
     re.MULTILINE | re.DOTALL,
 )
 PLACEHOLDER_RE = re.compile(
-    r"(?:\bTODO\b|\bTBD\b|待补充|待确认|待定|XXXX+|"
+    r"(?:\bTODO\b|\bTBD\b|待提供|待测试执行|待补充|待确认|待定|XXXX+|"
     r"[<\[]\s*(?:TBD|TODO|待补充|待确认)\s*[>\]]|\{\{[^}\n]+\}\})",
     re.IGNORECASE,
 )
@@ -102,6 +102,14 @@ def split_front_matter(raw: str) -> tuple[dict[str, Any], str, int, list[str]]:
             errors.append("YAML front matter 必须是映射对象")
         else:
             metadata = loaded
+            for name in ("document", "software", "project", "quality", "approval"):
+                if name in metadata and not isinstance(metadata[name], dict):
+                    errors.append(f"metadata.{name} must be a mapping")
+                    metadata[name] = {}
+            if "sources" in metadata and (not isinstance(metadata["sources"], list)
+                    or any(not isinstance(s, dict) for s in metadata["sources"])):
+                errors.append("metadata.sources must be a list of mappings")
+                metadata["sources"] = []
     except yaml.YAMLError as exc:
         errors.append(f"YAML front matter 解析失败：{exc}")
     offset = match.end()
@@ -111,7 +119,9 @@ def split_front_matter(raw: str) -> tuple[dict[str, Any], str, int, list[str]]:
 
 def parse_markdown(path: str | Path) -> MarkdownDocument:
     source_path = Path(path)
-    raw = source_path.read_text(encoding="utf-8")
+    # Keep the exact UTF-8 bytes (including CRLF/BOM) for provenance and
+    # unchanged DOCX round trips. Text-mode reads silently normalize newlines.
+    raw = source_path.read_bytes().decode("utf-8")
     metadata, body, body_offset, errors = split_front_matter(raw)
 
     headings = [
@@ -162,6 +172,28 @@ def strip_quality_blocks(body: str) -> str:
         visible,
     )
     return visible.strip() + "\n"
+
+
+CLAUSE_TITLE_RE = re.compile(
+    r"^\s*(?P<number>\d+(?:\.\s*(?:\d+|[xXyY]))*)[.、。]?\s*(?P<title>.*)$"
+)
+
+
+def split_clause_title(title: str) -> tuple[str | None, str]:
+    """Split a template clause such as 3.10.1标题, 4. X（名称） or 7.注释."""
+    match = CLAUSE_TITLE_RE.match(title)
+    if not match:
+        return None, title.strip()
+    return re.sub(r"\s+", "", match["number"]), match["title"].strip()
+
+
+def normalize_outline_heading(heading: Heading) -> Heading:
+    embedded, title = split_clause_title(heading.title)
+    number = str(heading.number) if heading.number is not None else embedded
+    if heading.number is not None and embedded != number:
+        title = heading.title.strip()
+    level = number.count(".") + 1 if number else heading.level
+    return Heading(min(max(level, 1), 9), title, heading.line, number)
 
 
 def strip_number_prefix(title: str) -> str:
@@ -411,10 +443,10 @@ def render_skeleton(
     metadata = {
         "document": {
             "type": document_type.code,
-            "title": document.get("title", f"{software.get('name', '待补充软件')}{document_type.chinese_name}"),
+            "title": document.get("title", document_type.chinese_name),
             "id": document.get("id", f"DOC-{document_type.code}-TBD"),
             "version": document.get("version", "V0.1"),
-            "status": document.get("status", "draft"),
+            "status": "draft",
             "standard_clause": document_type.clause,
             "appendix": document_type.appendix,
         },
@@ -449,10 +481,12 @@ def render_skeleton(
         ),
         "sources": project.get("sources", []),
     }
+    metadata["quality"] = dict(project.get("quality") or {"tier": "large"})
     yaml_text = yaml.safe_dump(metadata, allow_unicode=True, sort_keys=False).rstrip()
     lines = ["---", yaml_text, "---", "", f"# {metadata['document']['title']}", ""]
     counters = [0] * 9
-    for heading in outline:
+    for entry in outline:
+        heading = normalize_outline_heading(entry)
         level = min(max(heading.level, 1), 9)
         number = heading.number
         if number is None and not re.match(r"^(附录|参考文献|索引)", heading.title):
@@ -460,10 +494,19 @@ def render_skeleton(
             for index in range(level, len(counters)):
                 counters[index] = 0
             number = ".".join(str(value) for value in counters[:level] if value)
-        marks = "#" * min(level, 6)
+        if number is not None:
+            for index, value in enumerate(number.split(".")):
+                counters[index] = int(value) if value.isdigit() else 0
+            for index in range(level, len(counters)):
+                counters[index] = 0
+        marks = "#" * level
         label = f"{number} {heading.title}" if number else heading.title
         lines.extend([f"{marks} {label}", "", "待补充。", ""])
     lines.extend(["# 附录A 质量门禁数据块", ""])
-    for index, kind in enumerate(document_type.required_artifacts, 1):
-        lines.append(_artifact_stub(kind, index))
+    from .profiles import artifact_contracts_for
+    for index, contract in enumerate(artifact_contracts_for(document_type.code), 1):
+        kind = contract["kind"]
+        payload = {name: "待提供" for name in contract["required_fields"]}
+        payload["id"] = f"{document_type.code}-{kind.upper()}-{index:03d}"
+        lines.append("```gjb-" + kind + "\n" + yaml.safe_dump(payload, allow_unicode=True, sort_keys=False) + "```\n")
     return "\n".join(lines).rstrip() + "\n"

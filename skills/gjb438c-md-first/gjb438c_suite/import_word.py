@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 from dataclasses import dataclass
 import gzip
+import json
 from hashlib import sha256
 from pathlib import Path
 import re
@@ -16,8 +17,10 @@ from .render import (
     BOOKMARK_NAME,
     DOCVAR_HASH,
     DOCVAR_SOURCE_HASH,
+    DOCVAR_FRONT_HASH,
     DOCVAR_PREFIX,
     _normalized_bookmark_text,
+    _normalized_front_matter_text,
 )
 
 W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
@@ -152,7 +155,9 @@ def import_word(input_docx: str | Path, output_markdown: str | Path) -> ImportRe
     stored_hash = variables.get(DOCVAR_HASH)
 
     source_verified = embedded is not None and variables.get(DOCVAR_SOURCE_HASH) == sha256(embedded.encode("utf-8")).hexdigest()
-    exact = source_verified and stored_hash == current_hash
+    front_text = _normalized_front_matter_text(document_xml)
+    front_verified = bool(front_text) and variables.get(DOCVAR_FRONT_HASH) == sha256(front_text.encode("utf-8")).hexdigest()
+    exact = source_verified and front_verified and stored_hash == current_hash
     warning = None
     if exact:
         value = embedded
@@ -175,9 +180,12 @@ def import_word(input_docx: str | Path, output_markdown: str | Path) -> ImportRe
                 "requires_review": True,
             }
         )
+        if not front_verified:
+            metadata["round_trip"]["front_matter_review_required"] = True
+            metadata["round_trip"]["observed_front_paragraphs"] = json.loads(front_text) if front_text else []
         front = yaml.safe_dump(metadata, allow_unicode=True, sort_keys=False).rstrip()
         warning = (
-            "Word 正文或嵌入的 Markdown 基线校验不一致；"
+            "Word 前三页、正文或嵌入的 Markdown 基线校验不一致；"
             "已生成候选 Markdown，必须重新审核结构化证据块和追踪关系。"
         )
         value = f"---\n{front}\n---\n\n<!-- {warning} -->\n\n{candidate}"

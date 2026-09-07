@@ -75,6 +75,7 @@ def _mapping(path):
 def _audit_all(args):
     source = Path(args.input)
     document = parse_markdown(source)
+    source_hash = hashlib.sha256(document.raw.encode('utf-8')).hexdigest()
     code = get_document_type(args.type or str(document.metadata.get('document', {}).get('type', ''))).code
     tier = resolve_tier(document, args.tier)
     quality = document.metadata.get('quality') or {}
@@ -82,12 +83,17 @@ def _audit_all(args):
     floors = [minimum_body_pages(code, tier, v) for v in (declared, args.min_body_pages) if v is not None]
     floor = max([minimum_body_pages(code, tier), *floors])
     baselines = load_baselines(args.baseline_dir, args.baseline_srs)
+    baseline_snapshots = {k: sha256_file(v) for k, v in baselines.items()}
     srs = baselines.get('SRS' if code == 'SDD' else 'SSS') if code in {'SDD', 'SSDD'} else None
     combined = audit_markdown_with_profile(source, profile=args.profile, document_type=code, baseline_srs=srs, tier=tier)
     issues = markdown_volume_issues(document, code, tier, args.profile, min_body_pages_override=floor)
     baseline_issues, hashes = validate_baselines(source, args.profile, baselines, document_type=code)
     issues.extend(baseline_issues)
-    provenance = {'source_sha256': sha256_file(source), 'profile_sha256': sha256_file(profile_directory() / f'{code.lower()}.yaml'), 'baseline_sha256': hashes, 'tool_version': __version__}
+    if sha256_file(source) != source_hash or any(
+            baseline_snapshots.get(k) != h or sha256_file(baselines[k]) != h for k, h in hashes.items()):
+        issues.append({'severity': 'ERROR', 'code': 'AUDIT_INPUT_CHANGED',
+                       'message': 'source or selected baseline changed during content audit'})
+    provenance = {'source_sha256': source_hash, 'profile_sha256': sha256_file(profile_directory() / f'{code.lower()}.yaml'), 'baseline_sha256': hashes, 'tool_version': __version__}
     if args.source_register:
         register = Path(args.source_register)
         register_bytes = register.read_bytes()
@@ -119,13 +125,17 @@ def _render(args):
         paths['volume'] = Path(args.volume_json or str(target)+'.volume.json').resolve()
     elif args.volume_json:
         raise ValueError('--volume-json is only emitted by a release render; use audit-volume for candidates')
-    template = resolve_front_template(parse_markdown(args.input), args.front_template)
+    source_snapshot = parse_markdown(args.input)
+    template_source_hash = hashlib.sha256(source_snapshot.raw.encode('utf-8')).hexdigest()
+    template = resolve_front_template(source_snapshot, args.front_template)
     template_hash = sha256_file(template)
     inputs = [args.input, template]
     if args.source_register: inputs.append(args.source_register)
     inputs.extend(load_baselines(args.baseline_dir, args.baseline_srs).values())
     distinct_paths([*paths.values(), *dict.fromkeys(map(str, inputs))])
     payload, code, tier, floor, srs = _audit_all(args)
+    if payload['passed'] and payload['provenance']['source_sha256'] != template_source_hash:
+        raise PublicationError('source changed after front-template selection; no files published')
     if not payload['passed']:
         _emit(payload)
         return 2

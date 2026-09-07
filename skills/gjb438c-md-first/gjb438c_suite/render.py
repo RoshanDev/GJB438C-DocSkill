@@ -605,6 +605,12 @@ def resolve_front_template(
             markdown.path.parent / candidate,
             Path(__file__).resolve().parents[1] / candidate,
         ]
+        # Historical skeletons use this exact package-relative alias. Wheels
+        # store the same bundled master under data/, not the source-tree layout.
+        # Preserve a real project-relative override first; never fall back for
+        # an arbitrary missing custom template or an absolute configured path.
+        if not candidate.is_absolute() and candidate.as_posix() == "templates/front-matter/standard-front-matter.docx":
+            candidates.append(default_front_matter_template())
         for path in candidates:
             if path.is_file():
                 return path.absolute()

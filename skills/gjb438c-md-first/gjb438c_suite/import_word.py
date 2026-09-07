@@ -15,6 +15,7 @@ from .markdown_doc import split_front_matter
 from .render import (
     BOOKMARK_NAME,
     DOCVAR_HASH,
+    DOCVAR_SOURCE_HASH,
     DOCVAR_PREFIX,
     _normalized_bookmark_text,
 )
@@ -150,13 +151,14 @@ def import_word(input_docx: str | Path, output_markdown: str | Path) -> ImportRe
     current_hash = sha256(_normalized_bookmark_text(document_xml).encode("utf-8")).hexdigest()
     stored_hash = variables.get(DOCVAR_HASH)
 
-    exact = embedded is not None and stored_hash == current_hash
+    source_verified = embedded is not None and variables.get(DOCVAR_SOURCE_HASH) == sha256(embedded.encode("utf-8")).hexdigest()
+    exact = source_verified and stored_hash == current_hash
     warning = None
     if exact:
         value = embedded
     else:
         candidate = _candidate_body(document_xml, styles_xml)
-        if embedded:
+        if source_verified:
             metadata, _, _, errors = split_front_matter(embedded)
             if errors:
                 metadata = {}
@@ -164,7 +166,8 @@ def import_word(input_docx: str | Path, output_markdown: str | Path) -> ImportRe
             metadata = {}
         metadata.pop("approval", None)
         metadata.setdefault("document", {})["status"] = "draft"
-        metadata.setdefault("round_trip", {})
+        if not isinstance(metadata.get("round_trip"), dict):
+            metadata["round_trip"] = {}
         metadata["round_trip"].update(
             {
                 "source_docx": source.name,
@@ -174,7 +177,7 @@ def import_word(input_docx: str | Path, output_markdown: str | Path) -> ImportRe
         )
         front = yaml.safe_dump(metadata, allow_unicode=True, sort_keys=False).rstrip()
         warning = (
-            "Word 正文已变化，嵌入的 Markdown 基线不再与可见正文一致；"
+            "Word 正文或嵌入的 Markdown 基线校验不一致；"
             "已生成候选 Markdown，必须重新审核结构化证据块和追踪关系。"
         )
         value = f"---\n{front}\n---\n\n<!-- {warning} -->\n\n{candidate}"

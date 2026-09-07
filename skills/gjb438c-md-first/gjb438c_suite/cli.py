@@ -237,10 +237,26 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 0 if payload['passed'] else 2
         elif args.command == 'render': return _render(args)
         elif args.command == 'audit-volume':
-            document = parse_markdown(args.source)
+            # Capture roles before parsing/pagination. Keep lexical absolute
+            # paths so a symlink retarget during Office work is detected too.
+            source = Path(args.source).absolute()
+            docx = Path(args.input).absolute()
+            distinct_paths([source, docx])
+            bound_inputs = {str(p): sha256_file(p) for p in (source, docx)}
+            document = parse_markdown(source)
             code = get_document_type(args.type or str(document.metadata.get('document', {}).get('type',''))).code
-            report = audit_rendered_volume(document, code, args.input, tier=args.tier, min_body_pages_override=args.min_body_pages)
-            _emit(report.as_dict(), args.json, inputs=[args.input, args.source]); return 0 if report.passed else 4
+            profile_path = profile_directory() / f'{code.lower()}.yaml'
+            distinct_paths([source, docx, profile_path])
+            bound_inputs[str(profile_path)] = sha256_file(profile_path)
+            report = audit_rendered_volume(document, code, docx, tier=args.tier, min_body_pages_override=args.min_body_pages)
+            if report.passed and (report.source_sha256 != bound_inputs[str(source)]
+                                  or report.docx_sha256 != bound_inputs[str(docx)]):
+                raise PublicationError('volume measurements do not match the captured input snapshots')
+            payload = report.as_dict()
+            payload['input_sha256'] = dict(bound_inputs)
+            _emit(payload, args.json, inputs=list(bound_inputs),
+                  expected_hashes=bound_inputs if report.passed else None)
+            return 0 if report.passed else 4
         elif args.command == 'audit-docx':
             report = audit_docx(args.input, profile=args.profile)
             _emit(report.as_dict(), args.json, inputs=[args.input]); return 0 if report.passed else 3

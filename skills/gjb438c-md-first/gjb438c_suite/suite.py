@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 import json
+from collections.abc import Mapping
 import math
 from pathlib import Path
 import re
@@ -424,7 +425,10 @@ def audit_suite_manifest(
                     report.input_sha256[str(volume_path)] = hashlib.sha256(volume_json.encode("utf-8")).hexdigest()
                 persisted_bytes = volume_path.read_bytes()
                 persisted = json.loads(persisted_bytes.decode("utf-8"))
-                if (persisted.get("passed") is not True or persisted.get("source_sha256") != sha256_file(paths[code])
+                # Valid JSON can still be a list, scalar or null. Such a
+                # report is failed evidence, not an unhandled AttributeError.
+                if (not isinstance(persisted, Mapping)
+                        or persisted.get("passed") is not True or persisted.get("source_sha256") != sha256_file(paths[code])
                         or persisted.get("docx_sha256") != sha256_file(docx_path)
                         or persisted.get("tier") != selected_tier or persisted.get("document_type") != code):
                     _add(report, "ERROR", "SUITE_REPORT_MISMATCH", "volume report is missing current successful evidence", code)

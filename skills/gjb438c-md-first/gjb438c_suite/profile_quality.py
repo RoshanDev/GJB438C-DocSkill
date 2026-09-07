@@ -10,7 +10,9 @@ from typing import Any, Iterable
 
 import yaml
 
-from .markdown_doc import MarkdownDocument, parse_markdown
+from .markdown_doc import (
+    Heading, MarkdownDocument, normalize_outline_heading, parse_markdown, split_clause_title,
+)
 from .quality import audit_markdown
 from .registry import get_document_type
 from .trust import filled, approval_issues, tailoring_minimum
@@ -401,30 +403,42 @@ def audit_profile_document(
                         )
                     )
 
+    # Packaged outlines need the same legacy-number normalization used by
+    # init. Actual Markdown levels MUST NOT be normalized from clause numbers:
+    # that would silently turn a wrong '# 3.2 Title' into the required level 2.
     expected = []
     for item in mapping.get("outline", []):
         if not isinstance(item, dict):
             continue
-        title = str(item.get("title", "")).strip()
-        if title and not _dynamic_heading(title):
-            expected.append((int(item.get("level", 1)), _normalized_heading(title), title))
-    actual = {
-        _normalized_heading(str(getattr(item, "title", item)))
-        for item in getattr(document, "headings", ())
-    }
-    matched = sum(1 for _, normalized, _ in expected if normalized in actual)
-    report.heading_coverage_percent = matched / len(expected) * 100 if expected else 100.0
-    for level, normalized, title in expected:
-        if normalized in actual:
+        heading = normalize_outline_heading(Heading(
+            int(item.get("level", 1)), str(item.get("title", "")).strip(),
+            0, item.get("number"),
+        ))
+        clause = (heading.number or "").upper()
+        if (heading.title and not _dynamic_heading(heading.title)
+                and not any(part in {"X", "Y"} for part in clause.split("."))):
+            expected.append((heading.level, clause, _normalized_heading(heading.title), heading.title))
+    actual = Counter()
+    for heading in document.headings:
+        embedded, title = split_clause_title(heading.title)
+        clause = str(heading.number if heading.number is not None else embedded or "").upper()
+        actual[(heading.level, clause, _normalized_heading(title))] += 1
+    matched = 0
+    for level, clause, normalized, title in expected:
+        key = (level, clause, normalized)
+        if actual[key]:
+            matched += 1
+            actual[key] -= 1  # One occurrence cannot satisfy two outline entries.
             continue
         missing_severity = "ERROR" if audit_profile == "release" and level == 1 else severity
         report.issues.append(
             ProfileIssue(
                 missing_severity,
                 "PROFILE_HEADING_MISSING",
-                f"缺少 Profile 章节：{title}",
+                f"缺少 Profile 章节（级别 {level}，编号 {clause or '无'}）：{title}",
             )
         )
+    report.heading_coverage_percent = matched / len(expected) * 100 if expected else 100.0
     source_ids = {s.get("id") for s in document.metadata.get("sources", []) if isinstance(s, dict)}
     for artifact in artifacts:
         refs = artifact.data.get("source_refs", [])

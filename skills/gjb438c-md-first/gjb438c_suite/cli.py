@@ -19,7 +19,7 @@ from .import_word import ImportWordError, import_word
 from .markdown_doc import extract_template_outline, parse_markdown, render_skeleton
 from .profile_quality import ProfileQualityError, audit_markdown_with_profile, load_profile_mapping
 from .profiles import ProfileError, heading_outline, profile_directory
-from .publication import PublicationError, distinct_paths, publish_files, write_report
+from .publication import PublicationError, distinct_paths, publish_files, write_report, verify_input_hashes
 from .registry import get_document_type, iter_document_types, resolve_template
 from .render import RenderError, render_document, resolve_front_template
 from .suite import SuiteError, audit_suite_manifest, initialize_suite, manifest_artifact_paths
@@ -77,6 +77,8 @@ def _audit_all(args):
     document = parse_markdown(source)
     source_hash = hashlib.sha256(document.raw.encode('utf-8')).hexdigest()
     code = get_document_type(args.type or str(document.metadata.get('document', {}).get('type', ''))).code
+    profile_path = profile_directory() / f'{code.lower()}.yaml'
+    profile_hash = sha256_file(profile_path)
     tier = resolve_tier(document, args.tier)
     quality = document.metadata.get('quality') or {}
     declared = quality.get('min_body_pages')
@@ -84,25 +86,31 @@ def _audit_all(args):
     floor = max([minimum_body_pages(code, tier), *floors])
     baselines = load_baselines(args.baseline_dir, args.baseline_srs)
     baseline_snapshots = {k: sha256_file(v) for k, v in baselines.items()}
+    input_hashes = {str(source.resolve()): source_hash, str(profile_path.resolve()): profile_hash}
+    input_hashes.update({str(path.resolve()): baseline_snapshots[k] for k, path in baselines.items()})
     srs = baselines.get('SRS' if code == 'SDD' else 'SSS') if code in {'SDD', 'SSDD'} else None
     combined = audit_markdown_with_profile(source, profile=args.profile, document_type=code, baseline_srs=srs, tier=tier)
     issues = markdown_volume_issues(document, code, tier, args.profile, min_body_pages_override=floor)
     baseline_issues, hashes = validate_baselines(source, args.profile, baselines, document_type=code)
     issues.extend(baseline_issues)
-    if sha256_file(source) != source_hash or any(
-            baseline_snapshots.get(k) != h or sha256_file(baselines[k]) != h for k, h in hashes.items()):
+    if any(baseline_snapshots.get(k) != h for k, h in hashes.items()):
         issues.append({'severity': 'ERROR', 'code': 'AUDIT_INPUT_CHANGED',
                        'message': 'source or selected baseline changed during content audit'})
-    provenance = {'source_sha256': source_hash, 'profile_sha256': sha256_file(profile_directory() / f'{code.lower()}.yaml'), 'baseline_sha256': hashes, 'tool_version': __version__}
+    provenance = {'source_sha256': source_hash, 'profile_sha256': profile_hash, 'input_sha256': input_hashes, 'baseline_sha256': hashes, 'tool_version': __version__}
     if args.source_register:
         register = Path(args.source_register)
         register_bytes = register.read_bytes()
         text = register_bytes.decode('utf-8')
         provenance['source_register_sha256'] = hashlib.sha256(register_bytes).hexdigest()
+        input_hashes[str(register.resolve())] = provenance['source_register_sha256']
         for entry in document.metadata.get('sources', []):
             if isinstance(entry, dict) and not re.search(
                     r'(?<![\w-])' + re.escape(str(entry.get('id', ''))) + r'(?![\w-])', text):
                 issues.append({'severity': 'ERROR', 'code': 'SOURCE_REGISTER_MISMATCH', 'message': str(entry.get('id'))})
+    try:
+        verify_input_hashes(input_hashes)
+    except PublicationError as exc:
+        issues.append({'severity': 'ERROR', 'code': 'AUDIT_INPUT_CHANGED', 'message': str(exc)})
     payload = {'passed': combined.passed and not any(i['severity'] == 'ERROR' for i in issues), 'document_type': code, 'tier': tier, 'profile': args.profile,
                'approved_for_release': args.profile == 'release' and combined.passed and not any(i['severity'] == 'ERROR' for i in issues) and not approval_issues(document), 'content': combined.as_dict(), 'preflight': issues, 'provenance': provenance}
     return payload, code, tier, floor, srs
@@ -112,6 +120,8 @@ def _emit(payload, path=None, inputs=(), expected_hashes=None):
     text = payload if isinstance(payload, str) else json.dumps(payload, ensure_ascii=False, indent=2, default=str)
     if path:
         write_report(path, text, inputs=inputs, expected_hashes=expected_hashes)
+    else:
+        verify_input_hashes(expected_hashes or {})
     print(text)
 
 
@@ -165,8 +175,9 @@ def _render(args):
             raise PublicationError('baseline changed during render; no files published')
         if args.source_register and sha256_file(args.source_register) != payload['provenance'].get('source_register_sha256'):
             raise PublicationError('source register changed during render; no files published')
-        expected_hashes = {str(Path(args.input).resolve()): payload['provenance']['source_sha256'],
-                           str(template.resolve()): template_hash}
+        expected_hashes = dict(payload['provenance'].get('input_sha256', {}))
+        expected_hashes.update({str(Path(args.input).resolve()): payload['provenance']['source_sha256'],
+                                str(template.resolve()): template_hash})
         expected_hashes.update({str(current_bases[k].resolve()): h for k, h in payload['provenance']['baseline_sha256'].items()})
         if args.source_register:
             expected_hashes[str(Path(args.source_register).resolve())] = payload['provenance']['source_register_sha256']
@@ -209,7 +220,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(target)
         elif args.command == 'audit':
             payload, *_ = _audit_all(args)
-            _emit(payload, args.json, inputs=[args.input, *load_baselines(args.baseline_dir, args.baseline_srs).values(), *([args.source_register] if args.source_register else [])])
+            bound_inputs = payload['provenance']['input_sha256']
+            _emit(payload, args.json, inputs=list(bound_inputs),
+                  expected_hashes=bound_inputs if payload['passed'] else None)
             return 0 if payload['passed'] else 2
         elif args.command == 'render': return _render(args)
         elif args.command == 'audit-volume':

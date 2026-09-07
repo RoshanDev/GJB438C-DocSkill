@@ -34,7 +34,7 @@ gjb438c suite-audit suite.yaml --profile release --json reports/suite.json
 
 正式 render 自动产生 `SDD.docx.content.json`、`.audit.json`、`.volume.json`；全部暂存，报告先替换，DOCX 最后替换。异常返回非零，不发布新的半套文件。并发写入被锁阻止；进程被杀或断电后的锁/备份需人工恢复，不能直接删锁继续覆盖。多文件替换不是文件系统级原子快照，消费者仍须核验文件哈希。
 
-Word 修改后先 `gjb438c import-word changed.docx --output candidate.md`；未变正文可精确回流，改过的正文只生成待人工对照的候选，撤销旧批准。不得宣称复杂图片、表格、修订或结构化证据编辑天然无损。目录刷新输出候选文件，不在已有正式发布集里单独覆盖 Word。
+Word 修改后先 `gjb438c import-word changed.docx --output candidate.md`；只有正文、前三页及嵌入基线均校验一致才可精确回流。仅修改前三页或旧文件缺少前三页绑定时，保留已验证的 Markdown 正文和全部 gjb-* 块，只把元数据降级为待评审；对照 round_trip.observed_front_paragraphs 修订首页、签字与变更记录。正文已变或嵌入基线损坏时不复用旧正文，只生成待人工对照的候选。上述非精确回流均撤销旧批准。不得宣称复杂图片、表格、修订或结构化证据编辑天然无损。目录刷新输出候选文件，不在已有正式发布集里单独覆盖 Word。
 
 ## 验收边界
 

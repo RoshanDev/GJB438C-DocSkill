@@ -53,7 +53,12 @@ def test_front_edit_cannot_pass_binding_or_keep_exact_import(tmp_path, fragment)
     returned = tmp_path / 'returned.md'
     result = import_word(word, returned)
     assert not result.exact_round_trip
-    metadata = parse_markdown(returned).metadata
+    imported = parse_markdown(returned)
+    original = parse_markdown(SOURCE)
+    assert imported.body == original.body
+    assert [(a.kind, a.data) for a in imported.artifacts] == [(a.kind, a.data) for a in original.artifacts]
+    metadata = imported.metadata
+    assert metadata['round_trip']['body_preserved'] is True
     assert metadata['document']['status'] == 'draft'
     assert 'approval' not in metadata
     assert metadata['round_trip']['front_matter_review_required'] is True
@@ -74,7 +79,10 @@ def test_missing_or_wrong_front_binding_fails_closed(tmp_path, change):
     _rewrite(word, alter, 'word/settings.xml')
     with pytest.raises(volume.VolumeError, match='前三页'):
         volume._binding(parse_markdown(SOURCE), word)
-    assert not import_word(word, tmp_path / 'returned.md').exact_round_trip
+    returned = tmp_path / 'returned.md'
+    assert not import_word(word, returned).exact_round_trip
+    assert parse_markdown(returned).body == parse_markdown(SOURCE).body
+    assert parse_markdown(returned).metadata['round_trip']['body_preserved'] is True
 
 
 def test_front_run_splitting_is_not_a_content_edit(tmp_path):
@@ -138,3 +146,26 @@ def test_suite_rejects_front_edit_even_with_rehashed_volume_json(tmp_path, monke
     assert result['passed'] is False
     assert any(i['code'] == 'SUITE_RELEASE_AUDIT_FAILED' and '前三页' in i['message']
                for i in result['issues'])
+
+
+@pytest.mark.parametrize('change', ['body', 'embedded'])
+def test_cover_recovery_never_restores_an_unverified_body(tmp_path, change):
+    word = tmp_path / 'changed.docx'
+    render_document(SOURCE, word, profile='review')
+    _rewrite(word, lambda root: _edit_text(root, 'DEMO-SRS-001'))
+    if change == 'body':
+        _rewrite(word, lambda root: _edit_text(root, '1.1 标识'))
+    else:
+        from gjb438c_suite.render import DOCVAR_SOURCE_HASH
+        def alter(root):
+            node = next(n for n in root.xpath('./w:docVars/w:docVar', namespaces=NS)
+                        if n.get(f'{{{W}}}name') == DOCVAR_SOURCE_HASH)
+            node.set(f'{{{W}}}val', '0' * 64)
+        _rewrite(word, alter, 'word/settings.xml')
+    returned = tmp_path / 'candidate.md'
+    assert not import_word(word, returned).exact_round_trip
+    candidate = parse_markdown(returned)
+    assert candidate.metadata['round_trip']['body_preserved'] is False
+    assert candidate.body != parse_markdown(SOURCE).body
+    assert candidate.metadata['document']['status'] == 'draft'
+    assert 'approval' not in candidate.metadata

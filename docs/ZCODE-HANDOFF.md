@@ -18,3 +18,5 @@ gjb438c suite-audit suite.yaml --profile review --json reports/suite-review.json
 正式 Word 只能在源文件批准后生成，并保留 `.content.json`、`.audit.json`、`.volume.json`。工具检测部分重复段落/证据，不保证识别所有换词凑数；项目内容的技术正确性和真实接口、DDL、测试步骤仍须评审。
 
 单独改 Word 后不能沿用旧报告。import-word 产生候选 MD 后，人工对照结构化证据、图片和表格，再审计、批准、整体重发。字体替换或 Office 版本改变可能影响页数，目标交付环境必须再刷新和检查。
+
+新生成的 Word 同时绑定正文和前三页文字。修改首页、签字或变更记录后，不能继续沿用旧审计报告。仅前三页变化时，import-word 保留经过校验的原 Markdown 正文及结构化证据，设置 round_trip.body_preserved 和 front_matter_review_required，并记录 observed_front_paragraphs；人工把这些修改核对回元数据后再审核、批准和整体生成。旧 Word 缺少前三页绑定也按此方式回流，不直接判定发布通过。正文或嵌入基线校验失败时，不走正文保留路径。

@@ -22,6 +22,7 @@ from docx.oxml.ns import qn
 from docx.shared import Cm, Pt
 from lxml import etree
 
+from .body_binding import DOCVAR_STRUCTURE_HASH, body_structure_hash
 from .front_matter import FrontMatterError, render_front_matter
 from .markdown_doc import MarkdownDocument, nested_get, parse_markdown
 from .quality import AuditReport, audit_markdown
@@ -581,6 +582,7 @@ def _patch_settings_with_source(docx_path: Path, markdown_source: str) -> None:
     with tempfile.TemporaryDirectory(prefix="gjb438c-docvars-") as temp_name:
         temp = Path(temp_name)
         with ZipFile(docx_path) as archive:
+            structure_hash = body_structure_hash(archive)
             archive.extractall(temp)
         settings_path = temp / "word" / "settings.xml"
         settings_tree = etree.parse(str(settings_path))
@@ -595,7 +597,7 @@ def _patch_settings_with_source(docx_path: Path, markdown_source: str) -> None:
             doc_vars = etree.SubElement(settings_root, f"{{{W}}}docVars")
         for variable in list(doc_vars):
             name = variable.get(f"{{{W}}}name", "")
-            if name.startswith(DOCVAR_PREFIX) or name in {DOCVAR_HASH, DOCVAR_SOURCE_HASH, DOCVAR_FRONT_HASH}:
+            if name.startswith(DOCVAR_PREFIX) or name in {DOCVAR_HASH, DOCVAR_SOURCE_HASH, DOCVAR_FRONT_HASH, DOCVAR_STRUCTURE_HASH}:
                 doc_vars.remove(variable)
 
         compressed = gzip.compress(markdown_source.encode("utf-8"), compresslevel=9)
@@ -611,6 +613,7 @@ def _patch_settings_with_source(docx_path: Path, markdown_source: str) -> None:
         for name, value in (
             (DOCVAR_HASH, sha256(body_text.encode("utf-8")).hexdigest()),
             (DOCVAR_FRONT_HASH, sha256(front_text.encode("utf-8")).hexdigest() if front_text else ""),
+            (DOCVAR_STRUCTURE_HASH, structure_hash),
             (DOCVAR_SOURCE_HASH, sha256(markdown_source.encode("utf-8")).hexdigest()),
         ):
             variable = etree.SubElement(doc_vars, f"{{{W}}}docVar")

@@ -20,3 +20,5 @@ gjb438c suite-audit suite.yaml --profile review --json reports/suite-review.json
 单独改 Word 后不能沿用旧报告。import-word 产生候选 MD 后，人工对照结构化证据、图片和表格，再审计、批准、整体重发。字体替换或 Office 版本改变可能影响页数，目标交付环境必须再刷新和检查。
 
 新生成的 Word 同时绑定正文和前三页文字。修改首页、签字或变更记录后，不能继续沿用旧审计报告。仅前三页变化时，import-word 保留经过校验的原 Markdown 正文及结构化证据，设置 round_trip.body_preserved 和 front_matter_review_required，并记录 observed_front_paragraphs；人工把这些修改核对回元数据后再审核、批准和整体生成。旧 Word 缺少前三页绑定也按此方式回流，不直接判定发布通过。正文或嵌入基线校验失败时，不走正文保留路径。
+
+正文结构和相关资源现有独立绑定，图片内容、绘图尺寸、表格合并/拆分等变化不能按“仅封面修改”复用旧正文。只忽略目录刷新引入的书签和分页提示等已知非内容标记。原 Word 没有结构绑定时，不能证明正文未变：保留原 Word 和 Markdown，以原 Markdown 重新生成；必须回流时人工核对候选，不覆盖原文件。哈希用于一致性检查，不是数字签名，也不认证审核人的身份。

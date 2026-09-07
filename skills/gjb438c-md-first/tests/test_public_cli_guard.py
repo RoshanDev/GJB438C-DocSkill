@@ -37,8 +37,8 @@ def test_release_cli_publishes_every_audit_report_with_docx_last(tmp_path,monkey
     monkeypatch.setattr(cli,'audit_rendered_volume',lambda *a,**kw:SimpleNamespace(passed=True,as_dict=lambda:{'passed':True}))
     published=[]
     real=cli.publish_files
-    def publish(files,*,marker):
-        published.append((files.copy(),marker));return real(files,marker=marker)
+    def publish(files,*,marker,**kwargs):
+        published.append((files.copy(),marker));return real(files,marker=marker,**kwargs)
     monkeypatch.setattr(cli,'publish_files',publish)
     assert cli.main(['render',str(source),'--output',str(target),*options])==0
     assert len(published)==1 and len(published[0][0])==4 and published[0][1]==target

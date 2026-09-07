@@ -69,6 +69,17 @@ class SuiteAuditReport:
     documents: list[SuiteDocumentResult] = field(default_factory=list)
     total_body_pages: int = 0
     minimum_total_body_pages: int = 0
+    input_sha256: dict[str, str] = field(default_factory=dict)
+
+    def revalidate_inputs(self) -> None:
+        """Check the captured set, never rediscover inputs from a changed manifest."""
+        from .publication import PublicationError, verify_input_hashes
+        try:
+            verify_input_hashes(self.input_sha256)
+        except PublicationError as exc:
+            _add(self, "ERROR", "SUITE_INPUT_CHANGED", str(exc))
+            for document in self.documents:
+                document.passed = False
 
     @property
     def errors(self) -> list[SuiteIssue]:
@@ -82,6 +93,7 @@ class SuiteAuditReport:
         return {
             "manifest": str(self.manifest),
             "tier": self.tier,
+            "input_sha256": dict(self.input_sha256),
             "passed": self.passed,
             "summary": {
                 "errors": len(self.errors),
@@ -289,8 +301,9 @@ def audit_suite_manifest(
         raise SuiteError("suite profile must be review or release")
     manifest_path = Path(manifest).resolve()
     from .publication import distinct_paths
-    distinct_paths(manifest_artifact_paths(manifest_path))
+    manifest_hash = sha256_file(manifest_path)
     data = _load_yaml(manifest_path)
+    distinct_paths(_manifest_artifact_paths(manifest_path, data))
     suite, raw_entries = data.get("suite"), data.get("documents")
     if not isinstance(suite, dict) or not isinstance(raw_entries, dict):
         raise SuiteError("manifest must contain suite and documents mappings")
@@ -299,6 +312,7 @@ def audit_suite_manifest(
     if VALID_TIERS.index(normalized_tier) < VALID_TIERS.index(declared_tier):
         raise SuiteError('explicit tier cannot lower suite tier')
     report = SuiteAuditReport(manifest_path, normalized_tier)
+    report.input_sha256[str(manifest_path)] = manifest_hash
     entries = {}
     for key, value in raw_entries.items():
         code = get_document_type(str(key)).code
@@ -332,9 +346,26 @@ def audit_suite_manifest(
             if not path.is_file():
                 raise SuiteError(f"missing Markdown: {path}")
             paths[code] = path
+            report.input_sha256[str(path)] = sha256_file(path)
             documents[code] = parse_markdown(path)
         except (SuiteError, OSError, ValueError) as exc:
             _add(report, "ERROR", "SUITE_MARKDOWN_MISSING", str(exc), code)
+    # Capture *all* selected release inputs before the first slow Office check.
+    # Capturing only when each entry is processed would miss edits to a later
+    # document while an earlier entry is being rendered.
+    if audit_profile == "release":
+        for code in required:
+            entry = entries.get(code)
+            if not isinstance(entry, dict):
+                continue
+            for key in ("docx", "volume_report"):
+                if key == "volume_report" and write_volume_reports:
+                    continue  # We bind the exact report bytes we produce below.
+                try:
+                    path = _resolve(manifest_path.parent, entry.get(key), code + "." + key)
+                    report.input_sha256[str(path)] = sha256_file(path)
+                except (OSError, SuiteError) as exc:
+                    _add(report, "ERROR", "SUITE_INPUT_UNREADABLE", str(exc), code)
     identities = set()
     for code, document in documents.items():
         software = document.metadata.get('software')
@@ -387,8 +418,12 @@ def audit_suite_manifest(
                 if not volume.passed:
                     _add(report, "ERROR", "SUITE_VOLUME_AUDIT_FAILED", volume.to_text(), code)
                 if write_volume_reports:
-                    write_report(volume_path, volume.to_json(), inputs=[paths[code], docx_path, manifest_path])
-                persisted = json.loads(volume_path.read_text(encoding="utf-8"))
+                    import hashlib
+                    volume_json = volume.to_json()
+                    write_report(volume_path, volume_json, inputs=[paths[code], docx_path, manifest_path])
+                    report.input_sha256[str(volume_path)] = hashlib.sha256(volume_json.encode("utf-8")).hexdigest()
+                persisted_bytes = volume_path.read_bytes()
+                persisted = json.loads(persisted_bytes.decode("utf-8"))
                 if (persisted.get("passed") is not True or persisted.get("source_sha256") != sha256_file(paths[code])
                         or persisted.get("docx_sha256") != sha256_file(docx_path)
                         or persisted.get("tier") != selected_tier or persisted.get("document_type") != code):
@@ -446,12 +481,16 @@ def audit_suite_manifest(
             report.minimum_total_body_pages = requested
     if audit_profile == "release" and report.total_body_pages < report.minimum_total_body_pages:
         _add(report, "ERROR", "SUITE_PORTFOLIO_BODY_PAGES_LOW", "rendered portfolio below required body pages")
+    report.revalidate_inputs()
     return report
 
 
 def manifest_artifact_paths(manifest):
     path = Path(manifest).resolve()
-    data = _load_yaml(path)
+    return _manifest_artifact_paths(path, _load_yaml(path))
+
+
+def _manifest_artifact_paths(path, data):
     entries = data.get('documents') or {}
     if not isinstance(entries, dict):
         raise SuiteError('documents must be a mapping')

@@ -89,7 +89,23 @@ def _temporary(target: Path, suffix: str) -> Path:
     return Path(name)
 
 
-def publish_files(files: Mapping[Path, Path], *, marker: Path) -> None:
+def verify_input_hashes(expected: Mapping[str | Path, str]) -> None:
+    """Reject changed/deleted audit inputs; hashes always describe original bytes."""
+    for name, digest in expected.items():
+        path = Path(name)
+        try:
+            with path.open("rb") as stream:
+                actual = hashlib.file_digest(stream, "sha256").hexdigest() if hasattr(hashlib, "file_digest") else hashlib.sha256(stream.read()).hexdigest()
+        except OSError as exc:
+            raise PublicationError(f"audited input unavailable: {path}: {exc}") from exc
+        if actual != digest:
+            raise PublicationError(f"audited input changed: {path}")
+
+
+def publish_files(
+    files: Mapping[Path, Path], *, marker: Path,
+    expected_hashes: Mapping[str | Path, str] | None = None,
+) -> None:
     """Stage every source, flush it, then replace reports and the DOCX last.
 
     The mapping is destination -> completed staged source. Never pass a live
@@ -97,7 +113,7 @@ def publish_files(files: Mapping[Path, Path], *, marker: Path) -> None:
     """
     targets = distinct_paths(files)
     sources = [Path(files[raw]).resolve() for raw in files]
-    distinct_paths([*targets, *sources])
+    distinct_paths([*targets, *sources, *dict.fromkeys(expected_hashes or {})])
     marker = Path(marker).resolve()
     if marker not in targets:
         raise PublicationError("publication marker must belong to the release set")
@@ -120,12 +136,16 @@ def publish_files(files: Mapping[Path, Path], *, marker: Path) -> None:
                     shutil.copyfile(target, backup)
                     _fsync_file(backup)
                 _fsync_dir(target.parent)
+            verify_input_hashes(expected_hashes or {})
             for target in ordered:
                 os.replace(staged[target], target)
                 # Must be recorded BEFORE either durability check can fail.
                 published.append(target)
                 _fsync_file(target)
                 _fsync_dir(target.parent)
+            # An input may also change during the final replacement/fsync. Fail
+            # and restore the previous release set, rather than emit stale PASS.
+            verify_input_hashes(expected_hashes or {})
         except BaseException as exc:
             rollback_errors = []
             for target in reversed(published):
@@ -151,9 +171,12 @@ def publish_files(files: Mapping[Path, Path], *, marker: Path) -> None:
                         warnings.warn(f"publication temporary needs cleanup: {temporary}: {exc}", RuntimeWarning)
 
 
-def write_report(path: str | Path, text: str, *, inputs: Iterable[str | Path] = ()) -> None:
+def write_report(
+    path: str | Path, text: str, *, inputs: Iterable[str | Path] = (),
+    expected_hashes: Mapping[str | Path, str] | None = None,
+) -> None:
     target = distinct_paths([path, *inputs])[0]
     with tempfile.TemporaryDirectory(prefix="gjb-report-") as folder:
         staged = Path(folder) / "report.json"
-        staged.write_text(text, encoding="utf-8")
-        publish_files({target: staged}, marker=target)
+        staged.write_bytes(text.encode("utf-8"))
+        publish_files({target: staged}, marker=target, expected_hashes=expected_hashes)

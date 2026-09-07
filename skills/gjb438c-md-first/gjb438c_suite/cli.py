@@ -21,7 +21,7 @@ from .profile_quality import ProfileQualityError, audit_markdown_with_profile, l
 from .profiles import ProfileError, heading_outline, profile_directory
 from .publication import PublicationError, distinct_paths, publish_files, write_report
 from .registry import get_document_type, iter_document_types, resolve_template
-from .render import RenderError, render_document
+from .render import RenderError, render_document, resolve_front_template
 from .suite import SuiteError, audit_suite_manifest, initialize_suite, manifest_artifact_paths
 from .trust import approval_issues, fingerprint
 from .volume import VolumeError, audit_rendered_volume, markdown_volume_issues, minimum_body_pages, resolve_tier, sha256_file, volume_policy
@@ -85,7 +85,7 @@ def _audit_all(args):
     srs = baselines.get('SRS' if code == 'SDD' else 'SSS') if code in {'SDD', 'SSDD'} else None
     combined = audit_markdown_with_profile(source, profile=args.profile, document_type=code, baseline_srs=srs, tier=tier)
     issues = markdown_volume_issues(document, code, tier, args.profile, min_body_pages_override=floor)
-    baseline_issues, hashes = validate_baselines(source, args.profile, baselines)
+    baseline_issues, hashes = validate_baselines(source, args.profile, baselines, document_type=code)
     issues.extend(baseline_issues)
     provenance = {'source_sha256': sha256_file(source), 'profile_sha256': sha256_file(profile_directory() / f'{code.lower()}.yaml'), 'baseline_sha256': hashes, 'tool_version': __version__}
     if args.source_register:
@@ -102,10 +102,10 @@ def _audit_all(args):
     return payload, code, tier, floor, srs
 
 
-def _emit(payload, path=None, inputs=()):
+def _emit(payload, path=None, inputs=(), expected_hashes=None):
     text = payload if isinstance(payload, str) else json.dumps(payload, ensure_ascii=False, indent=2, default=str)
     if path:
-        write_report(path, text, inputs=inputs)
+        write_report(path, text, inputs=inputs, expected_hashes=expected_hashes)
     print(text)
 
 
@@ -119,8 +119,9 @@ def _render(args):
         paths['volume'] = Path(args.volume_json or str(target)+'.volume.json').resolve()
     elif args.volume_json:
         raise ValueError('--volume-json is only emitted by a release render; use audit-volume for candidates')
-    inputs = [args.input]
-    if args.front_template: inputs.append(args.front_template)
+    template = resolve_front_template(parse_markdown(args.input), args.front_template)
+    template_hash = sha256_file(template)
+    inputs = [args.input, template]
     if args.source_register: inputs.append(args.source_register)
     inputs.extend(load_baselines(args.baseline_dir, args.baseline_srs).values())
     distinct_paths([*paths.values(), *dict.fromkeys(map(str, inputs))])
@@ -131,7 +132,7 @@ def _render(args):
     with tempfile.TemporaryDirectory(prefix='gjb-build-') as folder:
         folder = Path(folder)
         draft = folder / 'document.docx'
-        render_document(args.input, draft, profile=args.profile, baseline_srs=srs, front_template=args.front_template)
+        render_document(args.input, draft, profile=args.profile, baseline_srs=srs, front_template=template)
         if args.refresh_toc or args.profile == 'release':
             refresh_toc_cache(draft)
         docx_report = audit_docx(draft, profile='release' if args.profile == 'release' else 'review')
@@ -154,12 +155,17 @@ def _render(args):
             raise PublicationError('baseline changed during render; no files published')
         if args.source_register and sha256_file(args.source_register) != payload['provenance'].get('source_register_sha256'):
             raise PublicationError('source register changed during render; no files published')
+        expected_hashes = {str(Path(args.input).resolve()): payload['provenance']['source_sha256'],
+                           str(template.resolve()): template_hash}
+        expected_hashes.update({str(current_bases[k].resolve()): h for k, h in payload['provenance']['baseline_sha256'].items()})
+        if args.source_register:
+            expected_hashes[str(Path(args.source_register).resolve())] = payload['provenance']['source_register_sha256']
         staged = {}
         for kind, data in reports.items():
             file = folder / f'{kind}.json'; file.write_text(json.dumps(data, ensure_ascii=False, indent=2, default=str), encoding='utf-8')
             staged[paths[kind]] = file
         staged[target] = draft
-        publish_files(staged, marker=target)
+        publish_files(staged, marker=target, expected_hashes=expected_hashes)
     _emit({'passed': True, 'profile': args.profile, 'files': {k: str(v) for k,v in paths.items()}, 'human_visual_review_required': True})
     return 0
 
@@ -208,7 +214,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         elif args.command in {'audit-suite','suite-audit'}:
             if args.json: distinct_paths([args.json, *manifest_artifact_paths(args.manifest)])
             report = audit_suite_manifest(args.manifest, audit_profile=args.profile, tier=args.tier, write_volume_reports=args.write_volume_reports)
-            _emit(report.as_dict(), args.json, inputs=manifest_artifact_paths(args.manifest)); return 0 if report.passed else 5
+            report.revalidate_inputs()
+            _emit(report.as_dict(), args.json,
+                  inputs=list(report.input_sha256),
+                  expected_hashes=report.input_sha256 if report.passed else None)
+            return 0 if report.passed else 5
         elif args.command == 'fingerprint': print(fingerprint(parse_markdown(args.input)))
         elif args.command == 'import-word':
             distinct_paths([args.input, args.output]); result=import_word(args.input, args.output); print(result.output); print('exact-round-trip' if result.exact_round_trip else result.warning)

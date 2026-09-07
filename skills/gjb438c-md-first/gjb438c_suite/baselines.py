@@ -35,9 +35,12 @@ def load_baselines(directory: str | Path | None, explicit_srs: str | Path | None
     return paths
 
 
-def validate_baselines(source: str | Path, phase: str, paths: Mapping[str, Path]) -> tuple[list[dict], dict[str, str]]:
+def validate_baselines(
+    source: str | Path, phase: str, paths: Mapping[str, Path],
+    *, document_type: str | None = None,
+) -> tuple[list[dict], dict[str, str]]:
     root = parse_markdown(source)
-    root_code = get_document_type(str(root.metadata.get('document', {}).get('type', ''))).code
+    root_code = get_document_type(document_type or str(root.metadata.get('document', {}).get('type', ''))).code
     identity = root.metadata.get('software', {}).get('identifier')
     valid: dict[str, str] = {}
     invalid: dict[str, str] = {}

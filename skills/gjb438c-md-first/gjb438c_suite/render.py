@@ -592,6 +592,26 @@ def _patch_settings_with_source(docx_path: Path, markdown_source: str) -> None:
         rebuilt.replace(docx_path)
 
 
+def resolve_front_template(
+    markdown: MarkdownDocument, front_template: str | Path | None = None,
+) -> Path:
+    """Resolve the one template used by both the CLI guard and the renderer."""
+    if front_template is not None:
+        return Path(front_template).absolute()
+    configured = nested_get(markdown.metadata, "front_matter.template")
+    if configured:
+        candidate = Path(str(configured))
+        candidates = [candidate] if candidate.is_absolute() else [
+            markdown.path.parent / candidate,
+            Path(__file__).resolve().parents[1] / candidate,
+        ]
+        for path in candidates:
+            if path.is_file():
+                return path.absolute()
+        raise RenderError(f"configured front template does not exist: {configured}")
+    return default_front_matter_template().absolute()
+
+
 def render_document(
     markdown_path: str | Path,
     output_path: str | Path,
@@ -608,18 +628,7 @@ def render_document(
         raise RenderError(report.to_text())
     release = profile == "release"
 
-    template = Path(front_template) if front_template else default_front_matter_template()
-    configured = nested_get(markdown.metadata, "front_matter.template")
-    if front_template is None and configured:
-        candidate = Path(str(configured))
-        if not candidate.is_absolute():
-            for base in (source.parent, Path(__file__).resolve().parents[1]):
-                resolved = (base / candidate).resolve()
-                if resolved.is_file():
-                    candidate = resolved
-                    break
-        if candidate.is_file():
-            template = candidate
+    template = resolve_front_template(markdown, front_template)
 
     with tempfile.TemporaryDirectory(prefix="gjb438c-render-") as temp_name:
         temp = Path(temp_name)

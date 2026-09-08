@@ -221,3 +221,35 @@ def test_expansion_example_in_code_is_not_an_expansion_heading(tmp_path):
     doc = parse_markdown(source_file(tmp_path, '# 1 范围\n```text\n### REQ-001 正文展开 1\n```\n'))
     issues = volume.markdown_volume_issues(doc, 'SRS', 'large', 'review')
     assert not any(i['code'] == 'VOLUME_GENERATED_EXPANSION' for i in issues)
+
+
+def test_atx_heading_keeps_literal_trailing_hash():
+    from gjb438c_suite.content_scope import render_lines
+    text = '# 3 C#\n正文。\n# 4 Title #\n后续。\n'
+    titles = [title for _, _, _, title, _ in headings(text)]
+    assert titles == ['3 C#', '4 Title']
+    lines = render_lines(text)
+    assert lines[0] == '# 3 C#'
+    assert lines[2] == '# 4 Title'
+
+
+def test_appendix_artifacts_do_not_satisfy_profile_counts(tmp_path):
+    body = '# 1 范围\n主文档正文足够短，证据只在附录。\n# 附录A 质量门禁数据块\n'
+    body += '```gjb-requirement\nid: REQ-APP-001\nstatement: 只在附录的需求。\nrationale: x\nsource: SRC-1\npriority: P0\nverification: 测试\nacceptance: 通过\n```\n'
+    report = audit_profile_document(source_file(tmp_path, body), document_type='SRS',
+                                    audit_profile='review', tier='large')
+    assert any(i.code == 'PROFILE_ARTIFACT_COUNT_LOW' and 'requirement' in i.message for i in report.issues)
+    assert report.counts.get('requirement', 0) == 0
+
+
+def test_volume_report_must_repeat_scoped_page_metrics(tmp_path, monkeypatch):
+    manifest, _ = _passing_suite(tmp_path, monkeypatch)
+    report = tmp_path / 'OCD.json'
+    data = json.loads(report.read_text(encoding='utf-8'))
+    data.pop('body_pages')
+    data.pop('appendix_pages')
+    data.pop('appendix_start_page')
+    report.write_text(json.dumps(data), encoding='utf-8')
+    result = suite.audit_suite_manifest(manifest)
+    assert not result.passed
+    assert any(i.code == 'SUITE_REPORT_MISMATCH' for i in result.issues)

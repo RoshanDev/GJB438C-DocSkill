@@ -8,6 +8,7 @@ from typing import Any, Iterable
 
 from .markdown_doc import Artifact, MarkdownDocument, nested_get, parse_markdown
 from .registry import DocumentType, get_document_type
+from .content_scope import main_body_line_span
 
 PROFILE_LEVEL = {"draft": 0, "review": 1, "release": 2}
 ID_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_.-]{2,127}$")
@@ -306,7 +307,12 @@ def _audit_common(doc: MarkdownDocument, item: DocumentType, report: AuditReport
 
     source_ids = _source_catalog(doc, report)
     ids: dict[str, Artifact] = {}
-    kinds = {artifact.kind for artifact in doc.artifacts}
+    main_first, main_last = main_body_line_span(doc.raw, doc.body)
+    main_artifacts = [
+        artifact for artifact in doc.artifacts
+        if artifact.line is not None and main_first <= artifact.line < main_last
+    ]
+    kinds = {artifact.kind for artifact in main_artifacts}
     for artifact in doc.artifacts:
         if not artifact.identifier:
             _add(

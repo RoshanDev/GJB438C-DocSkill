@@ -98,7 +98,10 @@ def headings(text: str):
             token = start.group(1)
             fence = (token[0], len(token))
             continue
-        atx = re.match(r"^ {0,3}(#{1,9})\s+(.+?)\s*#*\s*$", line)
+        stripped_nl = line.rstrip("\r\n")
+        # Closing ATX hashes require whitespace, so "# 3 C#" keeps the
+        # language name. A space then hashes ("# 4 Title #") still closes.
+        atx = re.match(r"^ {0,3}(#{1,9})\s+(.*?)(?:[ \t]+#+)?[ \t]*$", stripped_nl)
         if atx:
             yield i, current_offset, len(atx.group(1)), atx.group(2), False
         elif line.strip() and not line.startswith(('    ', '\t')) and i + 1 < len(lines):
@@ -115,6 +118,15 @@ class ContentScope:
     back_matter: str
     main_start: int
     back_start: int
+
+
+def main_body_line_span(raw: str, body: str) -> tuple[int, int]:
+    """1-based [first, last) line numbers of main body inside `raw`."""
+    scope = split_content(body)
+    offset = len(raw) - len(body)
+    first = raw.count("\n", 0, offset + scope.main_start) + 1
+    last = raw.count("\n", 0, offset + scope.back_start) + (1 if scope.back_matter else 2)
+    return first, last
 
 
 def split_content(text: str) -> ContentScope:

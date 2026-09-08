@@ -33,6 +33,7 @@ def _passing_suite(tmp_path, monkeypatch):
         word.write_bytes(b'unit-test-only-docx-' + code.encode())
         report = tmp_path / (code + '.json')
         report.write_text(json.dumps({'passed': True, 'document_type': code, 'tier': 'large', 'page_count_scope': volume.PAGE_COUNT_SCOPE,
+                                     'body_pages': 1000, 'appendix_pages': 0, 'appendix_start_page': None,
                                      'source_sha256': volume.sha256_file(source),
                                      'docx_sha256': volume.sha256_file(word)}), encoding='utf-8')
         entries[code] = {'markdown': source.name, 'docx': word.name, 'volume_report': report.name}
@@ -48,8 +49,10 @@ def _passing_suite(tmp_path, monkeypatch):
     monkeypatch.setattr(suite, 'audit_docx', lambda *a, **k: ok)
     def measure(document, code, word, **kwargs):
         data = {'passed': True, 'document_type': code, 'tier': 'large', 'page_count_scope': volume.PAGE_COUNT_SCOPE,
+                'body_pages': 1000, 'appendix_pages': 0, 'appendix_start_page': None,
                 'source_sha256': volume.sha256_text(document.raw), 'docx_sha256': volume.sha256_file(word)}
-        return SimpleNamespace(passed=True, body_pages=1000, to_json=lambda: json.dumps(data), to_text=lambda: 'fixture')
+        return SimpleNamespace(passed=True, body_pages=1000, appendix_pages=0, appendix_start_page=None,
+                               to_json=lambda: json.dumps(data), to_text=lambda: 'fixture')
     monkeypatch.setattr(suite, 'audit_rendered_volume', measure)
     return manifest, measure
 

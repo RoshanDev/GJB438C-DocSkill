@@ -338,13 +338,22 @@ def audit_profile_document(
             )
         )
 
-    artifacts = list(_iter_artifacts(document))
+    from .content_scope import main_body_line_span
+    main_first_line, main_last_line = main_body_line_span(document.raw, document.body)
+    all_artifacts = list(_iter_artifacts(document))
+    artifacts = []
+    for artifact in all_artifacts:
+        line = artifact_line(artifact)
+        if line is not None and main_first_line <= line < main_last_line:
+            artifacts.append(artifact)
     by_kind: dict[str, list[Any]] = {}
-    seen_ids: dict[str, tuple[str, int | None]] = {}
     for artifact in artifacts:
         kind = artifact_kind(artifact)
         if kind:
             by_kind.setdefault(kind, []).append(artifact)
+    seen_ids: dict[str, tuple[str, int | None]] = {}
+    for artifact in all_artifacts:
+        kind = artifact_kind(artifact)
         payload = artifact_mapping(artifact)
         artifact_id = str(payload.get("id", "")).strip()
         if artifact_id:
@@ -418,11 +427,6 @@ def audit_profile_document(
         if (heading.title and not _dynamic_heading(heading.title)
                 and not any(part in {"X", "Y"} for part in clause.split("."))):
             expected.append((heading.level, clause, _normalized_heading(heading.title), heading.title))
-    from .content_scope import split_content
-    scope = split_content(document.body)
-    offset = len(document.raw) - len(document.body)
-    main_first_line = document.raw.count('\n', 0, offset + scope.main_start) + 1
-    main_last_line = document.raw.count('\n', 0, offset + scope.back_start) + (1 if scope.back_matter else 2)
     actual = Counter()
     for heading in document.headings:
         if not main_first_line <= heading.line < main_last_line:

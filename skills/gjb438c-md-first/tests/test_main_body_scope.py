@@ -50,6 +50,17 @@ def test_back_matter_never_reopens_as_main(title):
     assert '# 3 需求' in scope.back_matter
 
 
+@pytest.mark.parametrize('title', [
+    '# 2 附件上传需求', '# 3 附录管理', '## 3.1 附件策略',
+])
+def test_feature_chapters_named_like_appendix_stay_main(title):
+    text = '# 1 范围\n正文甲。\n' + title + '\n功能正文。\n# 4 需求\n后续正文。'
+    scope = split_content(text)
+    assert '功能正文' in scope.main
+    assert '后续正文' in scope.main
+    assert scope.back_matter == ''
+
+
 @pytest.mark.parametrize('fake', [
     '```text\n# 附录 A\n```', '~~~~text\n# 附录 A\n~~~~',
     '<!--\n# 附录 A\n-->', '本章参见附录 A，不是附录标题。',

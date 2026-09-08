@@ -113,9 +113,16 @@ def strip_fenced_blocks(text: str) -> str:
 def is_back_matter_title(title: str) -> bool:
     value = re.sub(r"[*_`]", "", title).strip()
     value = re.sub(r"^\d+(?:\.\d+)*[.、．：:)]?\s*", "", value)
+    # 附录/附件 need a label boundary so "# 3 附录管理" stays main body.
     return bool(re.match(
-        r"^(?:附\s*录|附\s*件|appendi(?:x|ces)\b|annex(?:es)?\b|"
-        r"质量门禁数据块|结构化工程证据|结构化证据正文展开)", value, re.I))
+        r"^(?:"
+        r"附\s*[录件](?=$|\s|[A-Za-z0-9一二三四五六七八九十甲乙丙丁]|[（(：:、.．])|"
+        r"appendi(?:x|ces)\b|annex(?:es)?\b|"
+        r"质量门禁数据块|结构化工程证据|结构化证据正文展开"
+        r")",
+        value,
+        re.I,
+    ))
 
 
 def headings(text: str):

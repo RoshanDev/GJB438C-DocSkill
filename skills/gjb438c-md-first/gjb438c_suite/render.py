@@ -23,6 +23,8 @@ from docx.shared import Cm, Pt
 from lxml import etree
 
 from .body_binding import DOCVAR_STRUCTURE_HASH, body_structure_hash
+from .content_scope import MAIN_BOOKMARK, BACK_BOOKMARK, render_lines, split_content, mark_scope
+import yaml
 from .front_matter import FrontMatterError, render_front_matter
 from .markdown_doc import MarkdownDocument, nested_get, parse_markdown
 from .quality import AuditReport, audit_markdown
@@ -323,7 +325,11 @@ def _render_markdown_body(
     *,
     release: bool,
 ) -> tuple[object, object]:
-    lines = markdown.visible_body.splitlines()
+    lines = render_lines(markdown.body)
+    scope = split_content(markdown.body)
+    main_line = markdown.body.count('\n', 0, scope.main_start)
+    back_line = markdown.body.count('\n', 0, scope.back_start) if scope.back_matter else None
+    main_marked = back_marked = False
     doc_title = str(nested_get(markdown.metadata, "document.title", "")).strip()
     index = 0
     first_body_paragraph = None
@@ -332,6 +338,7 @@ def _render_markdown_body(
     in_code = False
     code_lang = ""
     code_lines: list[str] = []
+    fence_token = "```"
     skipped_document_title = False
     chapter = "0"
     figure_counters: dict[str, int] = {}
@@ -359,9 +366,19 @@ def _render_markdown_body(
         line = lines[index]
         stripped = line.strip()
         if in_code:
-            if stripped.startswith("```"):
-                paragraph = document.add_paragraph(style=styles["code"])
-                paragraph.add_run("\n".join(code_lines))
+            if re.fullmatch(re.escape(fence_token[0]) + '{' + str(len(fence_token)) + ',}\\s*', stripped):
+                if code_lang.lower().startswith('gjb-'):
+                    from .evidence import render_evidence_item
+                    try:
+                        data = yaml.safe_load("\n".join(code_lines))
+                    except yaml.YAMLError as exc:
+                        raise RenderError('结构化证据 YAML 无效') from exc
+                    if not isinstance(data, dict):
+                        raise RenderError('结构化证据必须是映射')
+                    paragraph = render_evidence_item(document, code_lang[4:], data, styles)
+                else:
+                    paragraph = document.add_paragraph(style=styles["code"])
+                    paragraph.add_run("\n".join(code_lines))
                 remember(paragraph)
                 in_code = False
                 code_lang = ""
@@ -371,10 +388,12 @@ def _render_markdown_body(
             index += 1
             continue
 
-        if stripped.startswith("```"):
+        fence_match = re.match(r"^(`{3,}|~{3,})(.*)$", stripped)
+        if fence_match:
             flush_paragraph()
             in_code = True
-            code_lang = stripped[3:].strip()
+            fence_token = fence_match.group(1)
+            code_lang = fence_match.group(2).strip()
             index += 1
             continue
 
@@ -393,6 +412,15 @@ def _render_markdown_body(
                 chapter = chapter_match.group(1)
             paragraph = document.add_paragraph(title, style=styles[f"heading_{level}"])
             remember(paragraph)
+            if index == main_line:
+                mark_scope(paragraph, MAIN_BOOKMARK, 1001)
+                main_marked = True
+                if scope.prelude.strip():
+                    paragraph.paragraph_format.page_break_before = True
+            if index == back_line:
+                mark_scope(paragraph, BACK_BOOKMARK, 1002)
+                back_marked = True
+                paragraph.paragraph_format.page_break_before = True
             index += 1
             continue
 
@@ -478,6 +506,10 @@ def _render_markdown_body(
 
     if first_body_paragraph is None or last_body_paragraph is None:
         raise RenderError("Markdown 正文为空")
+    if not main_marked:
+        mark_scope(first_body_paragraph, MAIN_BOOKMARK, 1001)
+    if scope.back_matter and not back_marked:
+        raise RenderError('附录边界未渲染为标题；请修正 Markdown 章节结构')
     return first_body_paragraph, last_body_paragraph
 
 
@@ -705,8 +737,6 @@ def render_document(
         first, last = _render_markdown_body(
             document, markdown, styles, release=release
         )
-        from .evidence import append_evidence
-        last = append_evidence(document, markdown, styles) or last
         _bookmark_start(first)
         _bookmark_end(last)
 

@@ -8,6 +8,7 @@ from typing import Any, Iterable
 
 from .markdown_doc import Artifact, MarkdownDocument, nested_get, parse_markdown
 from .registry import DocumentType, get_document_type
+from .content_scope import artifacts_in_main_body, artifacts_of_main, main_body_line_span
 
 PROFILE_LEVEL = {"draft": 0, "review": 1, "release": 2}
 ID_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_.-]{2,127}$")
@@ -306,7 +307,12 @@ def _audit_common(doc: MarkdownDocument, item: DocumentType, report: AuditReport
 
     source_ids = _source_catalog(doc, report)
     ids: dict[str, Artifact] = {}
-    kinds = {artifact.kind for artifact in doc.artifacts}
+    main_first, main_last = main_body_line_span(doc.raw, doc.body)
+    main_artifacts = [
+        artifact for artifact in doc.artifacts
+        if artifact.line is not None and main_first <= artifact.line < main_last
+    ]
+    kinds = {artifact.kind for artifact in main_artifacts}
     for artifact in doc.artifacts:
         if not artifact.identifier:
             _add(
@@ -385,7 +391,7 @@ def _audit_common(doc: MarkdownDocument, item: DocumentType, report: AuditReport
 
 def _audit_srs(doc: MarkdownDocument, report: AuditReport) -> set[str]:
     profile = report.profile
-    requirements = doc.artifacts_of("requirement")
+    requirements = artifacts_of_main(doc, "requirement")
     requirement_ids: set[str] = set()
     for requirement in requirements:
         _require_fields(
@@ -428,7 +434,7 @@ def _audit_srs(doc: MarkdownDocument, report: AuditReport) -> set[str]:
     if not requirements:
         _add(report, _severity(profile, review_error=True), "SRS_NO_REQUIREMENT", "SRS 未包含任何 gjb-requirement 数据块")
 
-    traces = doc.artifacts_of("traceability")
+    traces = artifacts_of_main(doc, "traceability")
     traced: set[str] = set()
     if not traces:
         _add(report, _severity(profile, review_error=True), "TRACEABILITY_MISSING", "SRS 缺少 gjb-traceability 数据块")
@@ -453,7 +459,7 @@ def _load_baseline_requirements(path: str | Path, report: AuditReport) -> set[st
     baseline = parse_markdown(baseline_path)
     ids = {
         artifact.identifier
-        for artifact in baseline.artifacts_of("requirement")
+        for artifact in artifacts_of_main(baseline, "requirement")
         if artifact.identifier
     }
     if not ids:
@@ -487,7 +493,7 @@ def _audit_sdd(
         "security": ("id", "assets", "threats", "controls", "audit", "residual_risk", "source_refs"),
         "verification": ("id", "target", "method", "criteria", "evidence", "source_refs"),
     }
-    by_kind = {kind: doc.artifacts_of(kind) for kind in specs}
+    by_kind = {kind: artifacts_of_main(doc, kind) for kind in specs}
     for kind, fields in specs.items():
         for artifact in by_kind[kind]:
             _require_fields(report, artifact, fields, profile, review_error=True)
@@ -525,7 +531,7 @@ def _audit_sdd(
     design_unit_ids = {item.identifier for item in by_kind["design-unit"] if item.identifier}
     all_target_ids = {
         artifact.identifier
-        for artifact in doc.artifacts
+        for artifact in artifacts_in_main_body(doc)
         if artifact.identifier
     }
     referenced_interfaces: set[str] = set()
@@ -540,7 +546,7 @@ def _audit_sdd(
         if provider.startswith("DU-") and provider not in design_unit_ids:
             _add(report, _severity(profile, review_error=True), "INTERFACE_PROVIDER_UNKNOWN", f"接口提供者 {provider} 不存在", artifact=interface)
 
-    traces = doc.artifacts_of("traceability")
+    traces = artifacts_of_main(doc, "traceability")
     traced_requirements: set[str] = set()
     if not traces:
         _add(report, _severity(profile, review_error=True), "TRACEABILITY_MISSING", "SDD 缺少 gjb-traceability 数据块")
@@ -577,7 +583,7 @@ def _audit_generic(doc: MarkdownDocument, item: DocumentType, report: AuditRepor
     # For the remaining 16 document kinds, the type-specific `required_artifacts`
     # registry provides the quality floor. Each block must carry an ID and, at
     # release, a source reference plus substantive content.
-    counts = {kind: len(doc.artifacts_of(kind)) for kind in item.required_artifacts}
+    counts = {kind: len(artifacts_of_main(doc, kind)) for kind in item.required_artifacts}
     report.metrics["required_artifact_counts"] = counts
 
 

@@ -63,7 +63,7 @@ jobs:
       - name: Office integration dependencies (no source mutations)
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libreoffice-writer python3-uno fonts-noto-cjk poppler-utils
       - run: python -m pip install -e 'skills/gjb438c-md-first[test]'
-      - run: python -m pytest skills/gjb438c-md-first/tests/test_office_integration.py -q
+      - run: python -m pytest skills/gjb438c-md-first/tests/test_office_integration.py skills/gjb438c-md-first/tests/test_main_body_scope.py -q
         env:
           GJB_OFFICE_TESTS: '1'
           PYTHONPATH: /usr/lib/python3/dist-packages

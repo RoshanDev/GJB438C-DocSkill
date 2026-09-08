@@ -65,45 +65,6 @@ sources:
 
 系统将任务执行与任务状态提交分离，并由状态服务统一校验任务状态转换。访问控制在接入边界执行，审计服务记录关键结果。
 
-# 4 CSCI 体系结构设计
-
-## 4.1 体系结构组成
-
-接入服务负责协议处理；任务服务负责受理和查询；任务执行器执行具体任务；状态服务校验并提交状态；关系数据库保存任务和审计索引。
-
-## 4.2 执行概念
-
-任务服务在事务中创建任务；执行器领取任务并产生状态事件；状态服务校验前态、事件序号和终态约束后提交结果。
-
-## 4.3 接口设计
-
-外部接口使用 HTTPS/JSON；内部任务事件采用持久消息通道。所有受保护操作携带身份和关联标识。
-
-# 5 CSCI 详细设计
-
-## 5.1 任务管理单元
-
-任务管理单元负责受理、领取、执行状态接收、查询、取消和超时处理，并保证终态稳定。
-
-## 5.2 访问控制单元
-
-访问控制单元负责认证、角色授权、拒绝处理和审计上下文传递。
-
-# 6 需求可追踪性
-
-表 6-1 需求—设计映射
-
-| SRS 需求 | 设计单元 | 验证 |
-|---|---|---|
-| REQ-TASK-001 | DU-TASK | VT-TASK-001 |
-| REQ-ACCESS-001 | DU-ACCESS | VT-ACCESS-001 |
-
-# 7 注释
-
-“统一提交”表示所有任务状态变化使用同一套状态转换校验规则，不限定具体部署进程数量。
-
-# 附录A 质量门禁数据块
-
 ```gjb-decision
 id: ADR-TASK-001
 context: 多个任务执行器可能产生重复、乱序或迟到事件，若直接覆盖状态会导致终态回退。
@@ -115,6 +76,12 @@ status: accepted
 source_refs: [SRC-SRS#REQ-TASK-001, SRC-DESIGN-BASELINE#state-model]
 ```
 
+# 4 CSCI 体系结构设计
+
+## 4.1 体系结构组成
+
+接入服务负责协议处理；任务服务负责受理和查询；任务执行器执行具体任务；状态服务校验并提交状态；关系数据库保存任务和审计索引。
+
 ```gjb-architecture
 id: ARCH-DEMO-001
 components: [接入服务, 任务服务, 任务执行器, 状态服务, 关系数据库, 审计服务]
@@ -124,37 +91,37 @@ failure_domains: 接入服务和执行器故障不影响已提交状态；状态
 source_refs: [SRC-DESIGN-BASELINE#architecture]
 ```
 
-```gjb-design-unit
-id: DU-TASK
-requirements: [REQ-TASK-001]
-responsibility: 管理任务受理后的领取、执行事件、状态提交、取消、超时和结果查询。
-behavior: 执行器领取任务并产生带序号事件；状态服务校验前态、事件序号和终态约束后提交状态。
-interfaces: [IF-TASK-API, IF-TASK-EVENT]
-data: [DM-TASK]
-states: [Pending, Running, Succeeded, Failed, Cancelled, TimedOut]
-errors: 领取超时允许重新领取；重复事件幂等忽略；非法转换进入隔离记录并告警。
-concurrency: 任务版本号采用乐观并发控制，同一任务只允许按事件序号单调推进。
-security: 查询和取消按角色授权；所有状态变化生成审计记录。
-deployment: 任务执行器多副本；状态服务两个候选实例中仅一个活动实例提交状态。
-verification: [VT-TASK-001]
-source_refs: [SRC-SRS#REQ-TASK-001, ADR-TASK-001]
+```gjb-deployment
+id: DEPLOY-DEMO-001
+nodes: 应用节点和数据库节点。
+placement: 接入服务、任务服务和执行器分散部署；状态服务活动实例由租约协调。
+resources: 各组件配置处理器和内存上下限，生产值由容量测试证据确定。
+network: 对外仅开放受控 HTTPS 入口，内部服务和消息通道使用受限网络区域。
+storage: 关系数据库使用持久存储和独立备份介质。
+upgrade: 先执行兼容性检查和数据迁移，再滚动升级无状态服务，最后升级状态服务。
+rollback: 保留上一版本制品和可逆数据迁移；回滚前检查状态模式兼容性。
+source_refs: [SRC-DESIGN-BASELINE#deployment]
 ```
 
-```gjb-design-unit
-id: DU-ACCESS
-requirements: [REQ-ACCESS-001]
-responsibility: 对受保护接口执行身份认证、角色授权、拒绝处理和审计上下文传递。
-behavior: 请求通过认证和角色检查后进入任务服务；拒绝请求不产生业务任务，但生成审计记录。
-interfaces: [IF-ACCESS-API]
-data: [DM-TASK]
-states: [Allowed, Rejected]
-errors: 未认证返回 401，无权限返回 403，参数非法返回 400，服务不可用返回 503。
-concurrency: 同一关联标识的重复请求使用幂等键避免重复创建任务。
-security: 强制加密传输、令牌校验、最小权限和审计字段脱敏。
-deployment: 多副本无状态部署，经受控入口提供服务。
-verification: [VT-ACCESS-001]
-source_refs: [SRC-SRS#REQ-ACCESS-001, SRC-DESIGN-BASELINE#access-control]
+## 4.2 执行概念
+
+任务服务在事务中创建任务；执行器领取任务并产生状态事件；状态服务校验前态、事件序号和终态约束后提交结果。
+
+```gjb-scenario
+id: SCN-TASK-COMPLETE
+requirements: [REQ-TASK-001, REQ-ACCESS-001]
+trigger: 已认证且具备相应角色的用户提交一个有效任务。
+preconditions: 认证服务、数据库和消息通道可用。
+steps: [接入服务完成认证授权, 任务服务创建 Pending 任务, 执行器领取并置为 Running, 状态服务提交 Succeeded, 用户查询结果]
+failures: [执行器故障后重新领取, 重复完成事件被幂等忽略, 非法状态转换进入隔离记录]
+postconditions: 任务处于稳定终态，结果和审计记录可查询。
+observability: 记录受理时延、执行时延、重试次数、事件积压、拒绝请求和非法转换数量。
+source_refs: [SRC-SRS#REQ-TASK-001, SRC-SRS#REQ-ACCESS-001]
 ```
+
+## 4.3 接口设计
+
+外部接口使用 HTTPS/JSON；内部任务事件采用持久消息通道。所有受保护操作携带身份和关联标识。
 
 ```gjb-interface
 id: IF-TASK-API
@@ -198,6 +165,28 @@ compatibility: 外部接口采用版本前缀，兼容期内保留上一稳定�
 source_refs: [SRC-SRS#REQ-ACCESS-001, SRC-DESIGN-BASELINE#external-api]
 ```
 
+# 5 CSCI 详细设计
+
+## 5.1 任务管理单元
+
+任务管理单元负责受理、领取、执行状态接收、查询、取消和超时处理，并保证终态稳定。
+
+```gjb-design-unit
+id: DU-TASK
+requirements: [REQ-TASK-001]
+responsibility: 管理任务受理后的领取、执行事件、状态提交、取消、超时和结果查询。
+behavior: 执行器领取任务并产生带序号事件；状态服务校验前态、事件序号和终态约束后提交状态。
+interfaces: [IF-TASK-API, IF-TASK-EVENT]
+data: [DM-TASK]
+states: [Pending, Running, Succeeded, Failed, Cancelled, TimedOut]
+errors: 领取超时允许重新领取；重复事件幂等忽略；非法转换进入隔离记录并告警。
+concurrency: 任务版本号采用乐观并发控制，同一任务只允许按事件序号单调推进。
+security: 查询和取消按角色授权；所有状态变化生成审计记录。
+deployment: 任务执行器多副本；状态服务两个候选实例中仅一个活动实例提交状态。
+verification: [VT-TASK-001]
+source_refs: [SRC-SRS#REQ-TASK-001, ADR-TASK-001]
+```
+
 ```gjb-data
 id: DM-TASK
 owner: 状态服务
@@ -210,28 +199,33 @@ recovery: 通过数据库备份和事件记录恢复，恢复后校验状态和�
 source_refs: [SRC-SRS#REQ-TASK-001, ADR-TASK-001]
 ```
 
-```gjb-scenario
-id: SCN-TASK-COMPLETE
-requirements: [REQ-TASK-001, REQ-ACCESS-001]
-trigger: 已认证且具备相应角色的用户提交一个有效任务。
-preconditions: 认证服务、数据库和消息通道可用。
-steps: [接入服务完成认证授权, 任务服务创建 Pending 任务, 执行器领取并置为 Running, 状态服务提交 Succeeded, 用户查询结果]
-failures: [执行器故障后重新领取, 重复完成事件被幂等忽略, 非法状态转换进入隔离记录]
-postconditions: 任务处于稳定终态，结果和审计记录可查询。
-observability: 记录受理时延、执行时延、重试次数、事件积压、拒绝请求和非法转换数量。
-source_refs: [SRC-SRS#REQ-TASK-001, SRC-SRS#REQ-ACCESS-001]
+```gjb-verification
+id: VT-TASK-001
+target: REQ-TASK-001 与 DU-TASK
+method: 故障注入测试、并发测试和状态机检查
+criteria: 任务在规定时间内可查询；重复、乱序和迟到事件不导致终态回退；故障恢复后状态与审计一致。
+evidence: 测试记录、数据库快照、事件序列和监控截图
+source_refs: [SRC-SRS#REQ-TASK-001]
 ```
 
-```gjb-deployment
-id: DEPLOY-DEMO-001
-nodes: 应用节点和数据库节点。
-placement: 接入服务、任务服务和执行器分散部署；状态服务活动实例由租约协调。
-resources: 各组件配置处理器和内存上下限，生产值由容量测试证据确定。
-network: 对外仅开放受控 HTTPS 入口，内部服务和消息通道使用受限网络区域。
-storage: 关系数据库使用持久存储和独立备份介质。
-upgrade: 先执行兼容性检查和数据迁移，再滚动升级无状态服务，最后升级状态服务。
-rollback: 保留上一版本制品和可逆数据迁移；回滚前检查状态模式兼容性。
-source_refs: [SRC-DESIGN-BASELINE#deployment]
+## 5.2 访问控制单元
+
+访问控制单元负责认证、角色授权、拒绝处理和审计上下文传递。
+
+```gjb-design-unit
+id: DU-ACCESS
+requirements: [REQ-ACCESS-001]
+responsibility: 对受保护接口执行身份认证、角色授权、拒绝处理和审计上下文传递。
+behavior: 请求通过认证和角色检查后进入任务服务；拒绝请求不产生业务任务，但生成审计记录。
+interfaces: [IF-ACCESS-API]
+data: [DM-TASK]
+states: [Allowed, Rejected]
+errors: 未认证返回 401，无权限返回 403，参数非法返回 400，服务不可用返回 503。
+concurrency: 同一关联标识的重复请求使用幂等键避免重复创建任务。
+security: 强制加密传输、令牌校验、最小权限和审计字段脱敏。
+deployment: 多副本无状态部署，经受控入口提供服务。
+verification: [VT-ACCESS-001]
+source_refs: [SRC-SRS#REQ-ACCESS-001, SRC-DESIGN-BASELINE#access-control]
 ```
 
 ```gjb-security
@@ -245,15 +239,6 @@ source_refs: [SRC-SRS#REQ-ACCESS-001, SRC-DESIGN-BASELINE#security]
 ```
 
 ```gjb-verification
-id: VT-TASK-001
-target: REQ-TASK-001 与 DU-TASK
-method: 故障注入测试、并发测试和状态机检查
-criteria: 任务在规定时间内可查询；重复、乱序和迟到事件不导致终态回退；故障恢复后状态与审计一致。
-evidence: 测试记录、数据库快照、事件序列和监控截图
-source_refs: [SRC-SRS#REQ-TASK-001]
-```
-
-```gjb-verification
 id: VT-ACCESS-001
 target: REQ-ACCESS-001 与 DU-ACCESS
 method: 接口测试、权限测试和审计检查
@@ -262,9 +247,22 @@ evidence: 接口测试报告、权限测试记录和审计日志
 source_refs: [SRC-SRS#REQ-ACCESS-001]
 ```
 
+# 6 需求可追踪性
+
+表 6-1 需求—设计映射
+
+| SRS 需求 | 设计单元 | 验证 |
+|---|---|---|
+| REQ-TASK-001 | DU-TASK | VT-TASK-001 |
+| REQ-ACCESS-001 | DU-ACCESS | VT-ACCESS-001 |
+
 ```gjb-traceability
 id: TRACE-SDD-001
 source_refs: [SRC-SRS]
 requirements: [REQ-TASK-001, REQ-ACCESS-001]
 forward_targets: [DU-TASK, DU-ACCESS, VT-TASK-001, VT-ACCESS-001]
 ```
+
+# 7 注释
+
+“统一提交”表示所有任务状态变化使用同一套状态转换校验规则，不限定具体部署进程数量。

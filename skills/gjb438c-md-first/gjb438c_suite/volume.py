@@ -16,6 +16,7 @@ from pypdf import PdfReader
 from zipfile import ZipFile
 from lxml import etree
 from .registry import get_document_type
+from .content_scope import PAGE_COUNT_SCOPE, MAIN_BOOKMARK, BACK_BOOKMARK, split_content, is_back_matter_title, strip_fenced_blocks, headings
 
 from .markdown_doc import MarkdownDocument, parse_markdown, strip_quality_blocks
 from .profile_quality import (
@@ -42,6 +43,9 @@ class RenderedPageMetrics:
     duplicate_pages: int
     duplicate_page_ratio: float
     minimum_page_characters: int
+    appendix_start_page: int | None = None
+    appendix_pages: int = 0
+    page_count_scope: str = PAGE_COUNT_SCOPE
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -65,6 +69,9 @@ class VolumeResult:
     issues: tuple[str, ...]
     source_sha256: str
     docx_sha256: str
+    appendix_start_page: int | None = None
+    appendix_pages: int = 0
+    page_count_scope: str = PAGE_COUNT_SCOPE
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -115,7 +122,7 @@ def _policy(document_type: str, tier: str) -> dict[str, Any]:
 def volume_policy(document_type: str, tier: str) -> dict[str, Any]:
     normalized = normalize_tier(tier)
     result = dict(_policy(document_type.upper(), normalized))
-    result.update({"document_type": document_type.upper(), "tier": normalized})
+    result.update({"document_type": document_type.upper(), "tier": normalized, "page_count_scope": PAGE_COUNT_SCOPE})
     return result
 
 
@@ -140,8 +147,7 @@ def minimum_body_pages(
 
 
 def _visible_markdown_text(document: MarkdownDocument) -> str:
-    body = strip_quality_blocks(document.body)
-    body = re.sub(r"```.*?```", "", body, flags=re.S)
+    body = strip_fenced_blocks(split_content(document.body).main)
     body = re.sub(r"!\[[^]]*\]\([^)]*\)", "", body)
     body = re.sub(r"<[^>]+>", "", body)
     return body
@@ -187,14 +193,18 @@ def _table_count(document: MarkdownDocument) -> int:
 
 
 def _figure_count(document: MarkdownDocument) -> int:
-    return len(re.findall(r"!\[[^]]*\]\([^)]*\)", strip_quality_blocks(document.body)))
+    return len(re.findall(r"!\[[^]]*\]\([^)]*\)", strip_fenced_blocks(split_content(document.body).main)))
 
 
 def effective_units(document: MarkdownDocument) -> tuple[int, int]:
     visible = visible_markdown_characters(document)
     duplicate, _, _ = duplicate_prose_metrics(document)
     deduplicated = max(0, visible - duplicate)
-    artifacts = len(tuple(getattr(document, "artifacts", ()) or ()))
+    scope = split_content(document.body)
+    offset = len(document.raw) - len(document.body)
+    first_line = document.raw.count("\n", 0, offset + scope.main_start) + 1
+    last_line = document.raw.count("\n", 0, offset + scope.back_start) + (1 if scope.back_matter else 2)
+    artifacts = sum(first_line <= a.line < last_line for a in document.artifacts)
     units = deduplicated + _table_count(document) * 350 + _figure_count(document) * 450 + artifacts * 120
     return visible, units
 
@@ -223,6 +233,13 @@ def markdown_volume_issues(
     duplicate_limit = float(policy.get("maximum_duplicate_page_ratio", 0.08))
     severity = "ERROR" if audit_profile in {"review", "release"} else "WARN"
     issues: list[dict[str, Any]] = []
+    scope = split_content(document.body)
+    if scope.back_matter:
+        issues.append({"severity": "WARN", "code": "VOLUME_BACK_MATTER_EXCLUDED",
+                       "message": "附录/附件独立统计，不计入正文页数、可见字符或等效内容门槛"})
+    if any(re.search(r"正文展开\s*\d+", title) for _, _, _, title, _ in headings(document.body)):
+        issues.append({"severity": severity, "code": "VOLUME_GENERATED_EXPANSION",
+                       "message": "检测到‘正文展开 N’批量扩写；请将真实设计/步骤写回对应正文章节，不得循环转述字段凑数"})
     quality = document.metadata.get("quality")
     declared = isinstance(quality, dict) and (quality.get("tier") or quality.get("scale"))
     if audit_profile == "release" and not declared:
@@ -287,22 +304,7 @@ def _normalized_page_text(text: str) -> str:
     return re.sub(r"[\s\W_]+", "", "".join(lines), flags=re.UNICODE)
 
 
-def _body_start(reader: PdfReader, docx: Path) -> int:
-    """Use the exported outline destination of the bookmarked first heading.
-
-    Never guess page four: a long TOC is not body content. Missing or ambiguous
-    destinations fail closed rather than inflating the page count.
-    """
-    with ZipFile(docx) as archive:
-        root = etree.fromstring(archive.read("word/document.xml"))
-    ns = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
-    starts = root.xpath('.//w:bookmarkStart[@w:name="GJB_BODY"]', namespaces=ns)
-    if len(starts) != 1:
-        raise VolumeError("需要唯一的 GJB_BODY 正文书签")
-    paragraph = starts[0].getparent()
-    title = "".join(paragraph.xpath('.//w:t/text()', namespaces=ns)).strip()
-    if not title:
-        raise VolumeError("正文起点不是可识别的标题")
+def _outline_page(reader: PdfReader, title: str) -> int:
     hits = []
     def visit(items):
         for item in items:
@@ -312,8 +314,65 @@ def _body_start(reader: PdfReader, docx: Path) -> int:
                 hits.append(reader.get_destination_page_number(item))
     visit(reader.outline)
     if len(hits) != 1 or hits[0] is None or hits[0] < 4:
-        raise VolumeError("无法唯一定位前三页及目录之后的正文起点")
+        raise VolumeError('无法唯一定位正文/附录分页；请刷新目录并检查标题')
     return hits[0]
+
+
+def _page_bounds(reader: PdfReader, docx: Path) -> tuple[int, int]:
+    # Retain GJB_BODY as the integrity/TOC range; narrower accounting does not
+    # weaken source binding for appendices, images or other back matter.
+    with ZipFile(docx) as archive:
+        root = etree.fromstring(archive.read('word/document.xml'))
+        style_root = etree.fromstring(archive.read('word/styles.xml'))
+    ns = {'w': 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'}
+    paragraphs = root.xpath('./w:body//w:p', namespaces=ns)
+    heading_ids = {n.get('{'+ns['w']+'}styleId') for n in
+                   style_root.xpath('./w:style[w:pPr/w:outlineLvl]', namespaces=ns)
+                   if int(n.find('w:pPr/w:outlineLvl', ns).get('{'+ns['w']+'}val', '9')) < 9}
+    def is_heading(p):
+        explicit = p.find('w:pPr/w:outlineLvl', ns)
+        if explicit is not None:
+            return int(explicit.get('{'+ns['w']+'}val', '9')) < 9
+        style = p.find('w:pPr/w:pStyle', ns)
+        return style is not None and style.get('{'+ns['w']+'}val') in heading_ids
+    def marker(name):
+        nodes = root.xpath('.//w:bookmarkStart[@w:name=$name]', namespaces=ns, name=name)
+        if len(nodes) != 1 or nodes[0].getparent() not in paragraphs:
+            raise VolumeError('缺少或重复正文计数书签 ' + name + '；请用当前版本重新生成 Word')
+        return nodes[0].getparent()
+    def title(p):
+        return ''.join(p.xpath('.//w:t/text()', namespaces=ns)).strip()
+    first = marker(MAIN_BOOKMARK)
+    # A relocated accounting marker must not hide early appendix content.
+    all_start = root.xpath('.//w:bookmarkStart[@w:name="GJB_BODY"]', namespaces=ns)
+    if len(all_start) != 1 or all_start[0].getparent() not in paragraphs:
+        raise VolumeError('需要唯一的 GJB_BODY 正文书签')
+    all_index = paragraphs.index(all_start[0].getparent())
+    main_index = paragraphs.index(first)
+    content = paragraphs[all_index:]
+    numbered = [p for p in content if is_heading(p)
+                and re.match(r'^1(?:\s+|[.、．]\s*[^\d])', title(p))]
+    expected_main = numbered[0] if numbered else paragraphs[all_index]
+    if first is not expected_main:
+        raise VolumeError('正文计数书签与第一个正文标题不一致')
+    back = [p for p in content if is_heading(p)
+            and is_back_matter_title(title(p))]
+    start = _outline_page(reader, title(first))
+    if not back:
+        if root.xpath('.//w:bookmarkStart[@w:name=$name]', namespaces=ns, name=BACK_BOOKMARK):
+            raise VolumeError('附录计数书签与文档结构不一致')
+        return start, len(reader.pages)
+    boundary = marker(BACK_BOOKMARK)
+    if boundary is not back[0] or paragraphs.index(boundary) <= main_index:
+        raise VolumeError('附录计数书签未指向第一个附录/附件')
+    end = _outline_page(reader, title(boundary))
+    if end <= start:
+        raise VolumeError('正文与附录没有独立分页，不能确认正文页数')
+    return start, end
+
+
+def _body_start(reader: PdfReader, docx: Path) -> int:
+    return _page_bounds(reader, docx)[0]
 
 
 def _binding(document: MarkdownDocument, docx: Path) -> None:
@@ -374,15 +433,15 @@ def rendered_page_metrics(
             raise VolumeError("LibreOffice 页数渲染失败：" + (result.stderr.strip() or result.stdout.strip()))
         reader = PdfReader(str(pdf))
         page_texts = [(page.extract_text() or "") for page in reader.pages]
-        detected_start = _body_start(reader, source) if body_start_page is None else None
+        bounds = _page_bounds(reader, source) if body_start_page is None else None
     total = len(page_texts)
     if body_start_page is None:
-        start_index = detected_start
+        start_index, end_index = bounds
     else:
         if body_start_page < 1 or body_start_page > max(1, total):
             raise VolumeError(f"body_start_page 超出范围：{body_start_page}/{total}")
-        start_index = body_start_page - 1
-    body = page_texts[start_index:]
+        start_index, end_index = body_start_page - 1, total
+    body = page_texts[start_index:end_index]
     normalized = [_normalized_page_text(item) for item in body]
     visible = sum(len(item) for item in normalized)
     thin = sum(len(item) < minimum_page_characters for item in normalized)
@@ -400,6 +459,8 @@ def rendered_page_metrics(
         duplicate_pages=duplicate,
         duplicate_page_ratio=(duplicate / body_pages if body_pages else 1.0),
         minimum_page_characters=minimum_page_characters,
+        appendix_start_page=end_index + 1 if end_index < total else None,
+        appendix_pages=total - end_index,
     )
 
 
@@ -465,4 +526,6 @@ def audit_rendered_volume(
         issues=tuple(issues),
         source_sha256=sha256_text(document.raw),
         docx_sha256=sha256_file(docx),
+        appendix_start_page=metrics.appendix_start_page,
+        appendix_pages=metrics.appendix_pages,
     )

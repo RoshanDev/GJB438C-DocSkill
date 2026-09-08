@@ -13,7 +13,7 @@ gjb438c doctor
 gjb438c list
 ```
 
-本版本为 **0.4.0**。Windows、WSL、Hermes venv 必须在实际执行 Zcode 的同一个 Python 环境更新。Skill 文本同步和 Python 包更新是两件事；`doctor` 输出实际解释器、运行模块、Profile 和母版路径。仅更新符号链接不代表 CLI 更新。只安装核心目录或 wheel 也可初始化全部 20 类，日常不需要根目录 DOCX 模板包。
+本版本为 **0.4.1**。Windows、WSL、Hermes venv 必须在实际执行 Zcode 的同一个 Python 环境更新。Skill 文本同步和 Python 包更新是两件事；`doctor` 输出实际解释器、运行模块、Profile 和母版路径。仅更新符号链接不代表 CLI 更新。只安装核心目录或 wheel 也可初始化全部 20 类，日常不需要根目录 DOCX 模板包。
 
 ## 工作流
 
@@ -48,3 +48,7 @@ python tools/stress_volume_gate.py
 ## 维护约束
 
 运行时和测试必须直接提交。CI 只校验当前源码，不生成后再推回实现；不得提交 bootstrap 分片、自修改工作流或以“稍后会生成”为理由合并。新的修复提交必须重新通过当前 head 的 CI 与 Codex review，不能复用旧提交的审查结果。公开仓库禁止真实组织标识、项目材料、内部拓扑和秘密。
+
+## 0.4.1 正文体量口径
+
+页数门槛只计主文档正文；所有附录/附件独立统计。结构化证据在所属章节原位展示，默认不再重复追加全量证据附录。旧体量报告需重新生成。详见 `skills/gjb438c-md-first/references/main-body-policy.md`。

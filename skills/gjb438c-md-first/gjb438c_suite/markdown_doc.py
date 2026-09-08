@@ -12,11 +12,11 @@ from docx.oxml.ns import qn
 FRONT_MATTER_RE = re.compile(r"\A\ufeff?---\s*\n(?P<yaml>.*?)\n---\s*\n", re.DOTALL)
 HEADING_RE = re.compile(r"^(?P<marks>#{1,9})\s+(?P<title>.+?)\s*$", re.MULTILINE)
 FENCE_RE = re.compile(
-    r"^```(?P<lang>gjb-[a-z0-9_-]+)\s*\n(?P<body>.*?)^```\s*$",
+    r"^(?P<fence>`{3,}|~{3,})(?P<lang>gjb-[a-z0-9_-]+)\s*\n(?P<body>.*?)^(?P=fence)\s*$",
     re.MULTILINE | re.DOTALL | re.IGNORECASE,
 )
 ANY_FENCE_RE = re.compile(
-    r"^```(?P<lang>[^\n]*)\n(?P<body>.*?)^```\s*$",
+    r"^(?P<fence>`{3,}|~{3,})(?P<lang>[^\n]*)\n(?P<body>.*?)^(?P=fence)\s*$",
     re.MULTILINE | re.DOTALL,
 )
 PLACEHOLDER_RE = re.compile(
@@ -135,12 +135,12 @@ def parse_markdown(path: str | Path) -> MarkdownDocument:
     ]
 
     artifacts: list[Artifact] = []
-    for match in FENCE_RE.finditer(body):
-        language = match.group("lang").lower()
+    from .content_scope import iter_gjb_fences
+    for start, _end, language, fence_body in iter_gjb_fences(body):
         kind = language.removeprefix("gjb-").replace("_", "-")
-        source_line = line_number(raw, body_offset + match.start())
+        source_line = line_number(raw, body_offset + start)
         try:
-            data = yaml.safe_load(match.group("body")) or {}
+            data = yaml.safe_load(fence_body) or {}
             if not isinstance(data, dict):
                 errors.append(f"第 {source_line} 行 {language} 数据块必须是 YAML 映射")
                 continue
@@ -161,7 +161,14 @@ def parse_markdown(path: str | Path) -> MarkdownDocument:
 
 
 def strip_quality_blocks(body: str) -> str:
-    visible = FENCE_RE.sub("", body)
+    from .content_scope import iter_gjb_fences
+    pieces = []
+    cursor = 0
+    for start, end, _language, _fence_body in iter_gjb_fences(body):
+        pieces.append(body[cursor:start])
+        cursor = end
+    pieces.append(body[cursor:])
+    visible = "".join(pieces)
     # Quality blocks are the Markdown source-of-truth for automated review, not
     # delivery prose. When a terminal appendix contains only those blocks, drop
     # its now-empty heading from the rendered Word document instead of shipping

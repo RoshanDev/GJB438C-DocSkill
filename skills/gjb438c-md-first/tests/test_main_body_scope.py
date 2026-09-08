@@ -272,3 +272,29 @@ def test_volume_report_rejects_boolean_page_metrics(tmp_path, monkeypatch):
     result = suite.audit_suite_manifest(manifest)
     assert not result.passed
     assert any(i.code == 'SUITE_REPORT_MISMATCH' for i in result.issues)
+
+
+def test_commented_gjb_fence_is_not_an_artifact(tmp_path):
+    live = (
+        '```gjb-requirement\nid: REQ-LIVE\nstatement: 系统应被计入。\n'
+        'rationale: a\nsource: s\npriority: P0\nverification: 测试\nacceptance: 可见\n```\n'
+    )
+    hidden = (
+        '<!--\n```gjb-requirement\nid: REQ-HIDDEN\nstatement: 系统应被注释掉。\n'
+        'rationale: a\nsource: s\npriority: P0\nverification: 测试\nacceptance: 可见\n```\n-->\n'
+    )
+    doc = parse_markdown(source_file(tmp_path, '# 1 范围\n正文。\n' + hidden + live))
+    assert [item.identifier for item in doc.artifacts] == ['REQ-LIVE']
+    report = audit_profile_document(source_file(tmp_path, '# 1 范围\n正文。\n' + hidden),
+                                    document_type='SRS', audit_profile='review', tier='large')
+    assert report.counts.get('requirement', 0) == 0
+
+
+def test_tilde_gjb_fence_is_an_artifact(tmp_path):
+    body = (
+        '# 1 范围\n正文。\n~~~gjb-requirement\nid: REQ-TILDE\nstatement: 系统应被计入。\n'
+        'rationale: a\nsource: s\npriority: P0\nverification: 测试\nacceptance: 可见\n~~~\n'
+    )
+    doc = parse_markdown(source_file(tmp_path, body))
+    assert [item.identifier for item in doc.artifacts] == ['REQ-TILDE']
+    assert doc.artifacts[0].language == 'gjb-requirement'

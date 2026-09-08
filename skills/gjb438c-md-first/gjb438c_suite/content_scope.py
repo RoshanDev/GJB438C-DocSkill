@@ -48,6 +48,48 @@ def mask_comments(text: str) -> str:
     return "".join(output)
 
 
+def iter_gjb_fences(text: str):
+    """Yield (start, end, language, body) for uncommented top-level gjb-* fences.
+
+    HTML comments are masked first, matching render_lines(). Opening/closing
+    rules follow the renderer: backtick or tilde fences of length >= 3.
+    Nested fences inside a non-gjb code block are ignored.
+    """
+    masked = mask_comments(text)
+    lines = masked.splitlines(keepends=True)
+    offset = 0
+    fence = None
+    capturing = False
+    start = 0
+    lang = ""
+    chunks: list[str] = []
+    for line in lines:
+        current = offset
+        offset += len(line)
+        stripped = line.strip()
+        if fence:
+            if re.fullmatch(re.escape(fence[0]) + "{" + str(fence[1]) + r",}\s*", stripped):
+                if capturing:
+                    yield start, offset, lang, "".join(chunks)
+                fence = None
+                capturing = False
+                chunks = []
+                lang = ""
+            elif capturing:
+                chunks.append(line)
+            continue
+        opening = re.match(r"^(`{3,}|~{3,})(.*)$", stripped)
+        if opening:
+            token = opening.group(1)
+            info = opening.group(2).strip()
+            fence = (token[0], len(token))
+            if info.lower().startswith("gjb-"):
+                capturing = True
+                lang = info.split()[0].lower()
+                start = current
+                chunks = []
+
+
 def strip_fenced_blocks(text: str) -> str:
     """Narrative accounting excludes code/evidence, including tilde fences."""
     result, fence = [], None

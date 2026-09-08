@@ -11,6 +11,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from .markdown_doc import MarkdownDocument
+from .content_scope import artifacts_in_main_body, artifacts_of_main
 from .profile_quality import artifact_kind, artifact_mapping, load_profile_mapping
 from .registry import get_document_type
 
@@ -56,7 +57,7 @@ def reference_issues(
         if baseline is None:
             continue  # Missing dependencies are reported by the baseline gate.
         declared = {c["kind"] for c in load_profile_mapping(baseline_code)["artifact_contracts"]}
-        for artifact in baseline.artifacts:
+        for artifact in artifacts_in_main_body(baseline):
             kind = artifact_kind(artifact)
             identifier = str(artifact_mapping(artifact).get("id", "")).strip()
             if kind in declared and identifier:
@@ -70,7 +71,7 @@ def reference_issues(
                    for name, target in references.items()
                    if isinstance(target, str) and target.startswith("baseline:")}
         covered: dict[str, set[str]] = {kind: set() for kind in targets.values()}
-        for artifact in document.artifacts_of(contract["kind"]):
+        for artifact in artifacts_of_main(document, contract["kind"]):
             payload = artifact_mapping(artifact)
             identifier = str(payload.get("id") or "<no ID>")
             for name, target_kind in targets.items():

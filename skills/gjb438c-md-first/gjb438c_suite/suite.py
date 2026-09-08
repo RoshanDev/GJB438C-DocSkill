@@ -434,9 +434,15 @@ def audit_suite_manifest(
                         or persisted.get("docx_sha256") != sha256_file(docx_path)
                         or persisted.get("page_count_scope") != PAGE_COUNT_SCOPE
                         or persisted.get("tier") != selected_tier or persisted.get("document_type") != code
+                        or type(persisted.get("body_pages")) is not int
                         or persisted.get("body_pages") != volume.body_pages
+                        or type(persisted.get("appendix_pages")) is not int
                         or persisted.get("appendix_pages") != volume.appendix_pages
-                        or persisted.get("appendix_start_page") != volume.appendix_start_page):
+                        or (volume.appendix_start_page is None and persisted.get("appendix_start_page") is not None)
+                        or (volume.appendix_start_page is not None and (
+                            type(persisted.get("appendix_start_page")) is not int
+                            or persisted.get("appendix_start_page") != volume.appendix_start_page
+                        ))):
                     _add(report, "ERROR", "SUITE_REPORT_MISMATCH", "volume report is missing current successful evidence", code)
             except (OSError, ValueError, VolumeError, SuiteError) as exc:
                 _add(report, "ERROR", "SUITE_RELEASE_AUDIT_FAILED", str(exc), code)

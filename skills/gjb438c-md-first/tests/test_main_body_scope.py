@@ -253,3 +253,22 @@ def test_volume_report_must_repeat_scoped_page_metrics(tmp_path, monkeypatch):
     result = suite.audit_suite_manifest(manifest)
     assert not result.passed
     assert any(i.code == 'SUITE_REPORT_MISMATCH' for i in result.issues)
+
+
+def test_relationship_audit_ignores_appendix_requirements(tmp_path):
+    from gjb438c_suite.quality import audit_markdown
+    body = '# 1 范围\n主文档没有需求块。\n# 附录A 质量门禁数据块\n'
+    body += '```gjb-requirement\nid: REQ-APP-001\nstatement: 系统应只在附录出现。\nrationale: x\nsource: SRC-1\npriority: P0\nverification: 测试\nacceptance: 可见结果\n```\n'
+    report = audit_markdown(source_file(tmp_path, body), profile='review', document_type='SRS')
+    assert any(i.code == 'SRS_NO_REQUIREMENT' for i in report.issues)
+
+
+def test_volume_report_rejects_boolean_page_metrics(tmp_path, monkeypatch):
+    manifest, _ = _passing_suite(tmp_path, monkeypatch)
+    report = tmp_path / 'OCD.json'
+    data = json.loads(report.read_text(encoding='utf-8'))
+    data['appendix_pages'] = False
+    report.write_text(json.dumps(data), encoding='utf-8')
+    result = suite.audit_suite_manifest(manifest)
+    assert not result.passed
+    assert any(i.code == 'SUITE_REPORT_MISMATCH' for i in result.issues)

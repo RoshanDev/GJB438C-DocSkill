@@ -129,6 +129,28 @@ def main_body_line_span(raw: str, body: str) -> tuple[int, int]:
     return first, last
 
 
+def artifacts_in_main_body(document) -> list:
+    first, last = main_body_line_span(document.raw, document.body)
+    selected = []
+    for artifact in getattr(document, "artifacts", ()) or ():
+        line = getattr(artifact, "line", None)
+        try:
+            line = int(line) if line is not None else None
+        except (TypeError, ValueError):
+            line = None
+        if line is not None and first <= line < last:
+            selected.append(artifact)
+    return selected
+
+
+def artifacts_of_main(document, kind: str) -> list:
+    wanted = kind.lower().replace("_", "-")
+    return [
+        artifact for artifact in artifacts_in_main_body(document)
+        if str(getattr(artifact, "kind", "")).lower().replace("_", "-") == wanted
+    ]
+
+
 def split_content(text: str) -> ContentScope:
     start, end = 0, len(text)
     found_main = False

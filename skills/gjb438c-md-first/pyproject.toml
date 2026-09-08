@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "gjb438c-md-first"
-version = "0.4.0"
+version = "0.4.1"
 description = "Markdown-first authoring, quality gates, and DOCX rendering for GJB 438C-2021 document suites"
 readme = "README.md"
 requires-python = ">=3.10"

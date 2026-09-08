@@ -21,11 +21,30 @@ def _text(value) -> str:
     return str(value)
 
 
+def render_evidence_item(document, kind, data, styles):
+    """One visible table at its owning Markdown clause, never a second dump."""
+    paragraph = document.add_paragraph(str(data.get('id') or '未编号证据'), style=styles['caption'])
+    table = document.add_table(rows=0, cols=2)
+    table.style = 'Table Grid'
+    for key, value in data.items():
+        cells = table.add_row().cells
+        cells[0].text, cells[1].text = str(key), _text(value)
+        for cell in cells:
+            for p in cell.paragraphs:
+                p.style = styles['table']
+                p.paragraph_format.keep_together = False
+                p.paragraph_format.keep_with_next = False
+    return document.add_paragraph('', style=styles['body_no_indent'])
+
+
 def append_evidence(document, source: MarkdownDocument, styles):
     if not source.artifacts:
         return None
     document.add_page_break()
     heading = document.add_paragraph(TITLE, style=styles['heading_1'])
+    from .content_scope import BACK_BOOKMARK, mark_scope
+    if not document.element.xpath('.//w:bookmarkStart[@w:name="GJB_BACK_MATTER"]'):
+        mark_scope(heading, BACK_BOOKMARK, 1002)
     document.add_paragraph("以下记录来自 Markdown 的结构化证据。它们可供追踪核对，不能替代正文的技术论证或人工评审。", style=styles['body'])
     groups = defaultdict(list)
     for item in source.artifacts:
@@ -50,7 +69,7 @@ def append_evidence(document, source: MarkdownDocument, styles):
 
 
 def append_evidence_appendix(docx: str | Path, source: str | Path | MarkdownDocument) -> Path:
-    """Compatibility helper; the normal renderer already appends the evidence."""
+    """Compatibility helper; explicit legacy export only; normal rendering uses inline evidence."""
     from .render import configure_styles, _patch_settings_with_source
     document = source if isinstance(source, MarkdownDocument) else parse_markdown(source)
     target = Path(docx)

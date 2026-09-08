@@ -1,4 +1,4 @@
-# GJB 438C Markdown-first 0.4.0
+# GJB 438C Markdown-first 0.4.1
 
 本目录是可独立安装的 Python 包及 Agent Skill。默认使用随包的二十类 Profile 和中性前三页 DOCX 母版，无需仓库根模板目录。
 

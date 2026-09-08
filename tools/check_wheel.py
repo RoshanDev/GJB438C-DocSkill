@@ -18,7 +18,7 @@ from gjb438c_suite.cli import main
 from gjb438c_suite.registry import iter_document_types,default_front_matter_template
 import gjb438c_suite
 assert str(Path(gjb438c_suite.__file__).resolve()).startswith(str(Path("installed").resolve()))
-assert gjb438c_suite.__version__=="0.4.0"
+assert gjb438c_suite.__version__=="0.4.1"
 assert default_front_matter_template().is_file()
 for item in iter_document_types():
     assert main(["init","--type",item.code,"--output",item.code+".md"])==0

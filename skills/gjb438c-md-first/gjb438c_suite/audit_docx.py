@@ -277,9 +277,11 @@ def audit_docx(path: str | Path, *, profile: str = "review") -> DocxAuditReport:
 
     body_style_counts: dict[str, int] = {}
     active = False
+    body_id = None
     for paragraph in document.paragraphs:
         if paragraph._p.xpath(f'.//w:bookmarkStart[@w:name="{BOOKMARK_NAME}"]'):
             active = True
+            body_id = paragraph._p.xpath(f'.//w:bookmarkStart[@w:name="{BOOKMARK_NAME}"]')[0].get(qn('w:id'))
         if active:
             name = paragraph.style.name if paragraph.style is not None else ""
             if paragraph.text.strip():
@@ -290,7 +292,7 @@ def audit_docx(path: str | Path, *, profile: str = "review") -> DocxAuditReport:
                 }
                 if name not in allowed:
                     _add(report, "ERROR", "BODY_STYLE", f"正文段落使用未允许样式 {name!r}: {paragraph.text[:40]}")
-        if active and paragraph._p.xpath('.//w:bookmarkEnd'):
+        if active and any(n.get(qn('w:id')) == body_id for n in paragraph._p.xpath('.//w:bookmarkEnd')):
             break
 
     report.metrics.update(

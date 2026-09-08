@@ -418,8 +418,15 @@ def audit_profile_document(
         if (heading.title and not _dynamic_heading(heading.title)
                 and not any(part in {"X", "Y"} for part in clause.split("."))):
             expected.append((heading.level, clause, _normalized_heading(heading.title), heading.title))
+    from .content_scope import split_content
+    scope = split_content(document.body)
+    offset = len(document.raw) - len(document.body)
+    main_first_line = document.raw.count('\n', 0, offset + scope.main_start) + 1
+    main_last_line = document.raw.count('\n', 0, offset + scope.back_start) + (1 if scope.back_matter else 2)
     actual = Counter()
     for heading in document.headings:
+        if not main_first_line <= heading.line < main_last_line:
+            continue
         embedded, title = split_clause_title(heading.title)
         clause = str(heading.number if heading.number is not None else embedded or "").upper()
         actual[(heading.level, clause, _normalized_heading(title))] += 1

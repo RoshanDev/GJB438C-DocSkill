@@ -1,6 +1,6 @@
 # Zcode 更新后的验收与返工
 
-先在 Zcode 真正使用的 Python 环境更新核心包和 20 个入口。运行 `gjb438c --version`、`gjb438c doctor`，应显示 0.4.0、20 类 Profile 及随包母版。不要凭 SKILL.md 大小或时间戳判断。旧 `word-fillter-*` 不要铺到活动 Skill 目录。
+先在 Zcode 真正使用的 Python 环境更新核心包和 20 个入口。运行 `gjb438c --version`、`gjb438c doctor`，应显示 0.4.1、20 类 Profile 及随包母版。不要凭 SKILL.md 大小或时间戳判断。旧 `word-fillter-*` 不要铺到活动 Skill 目录。
 
 在空临时目录运行 `gjb438c init --type SSS --output SSS.md`；不得传 template-root。再执行 review，初始骨架应失败。draft 可渲染为预览；review/release 失败不是工具坏了，而是内容仍不满足合同。预览不等于发布通过。
 
@@ -22,3 +22,10 @@ gjb438c suite-audit suite.yaml --profile review --json reports/suite-review.json
 新生成的 Word 同时绑定正文和前三页文字。修改首页、签字或变更记录后，不能继续沿用旧审计报告。仅前三页变化时，import-word 保留经过校验的原 Markdown 正文及结构化证据，设置 round_trip.body_preserved 和 front_matter_review_required，并记录 observed_front_paragraphs；人工把这些修改核对回元数据后再审核、批准和整体生成。旧 Word 缺少前三页绑定也按此方式回流，不直接判定发布通过。正文或嵌入基线校验失败时，不走正文保留路径。
 
 正文结构和相关资源现有独立绑定，图片内容、绘图尺寸、表格合并/拆分等变化不能按“仅封面修改”复用旧正文。只忽略目录刷新引入的书签和分页提示等已知非内容标记。原 Word 没有结构绑定时，不能证明正文未变：保留原 Word 和 Markdown，以原 Markdown 重新生成；必须回流时人工核对候选，不覆盖原文件。哈希用于一致性检查，不是数字签名，也不认证审核人的身份。
+
+
+## 从附录堆积稿迁移
+
+先列出主文章节、各附录的开始位置和内容用途。不要按字符差额调用循环扩写脚本，不要把字段重复转述成“正文展开 N”。备份后将真正的需求、设计、字段、用例及其唯一 gjb-* 记录移入所属正文章节，补足流程和异常说明；删除确认冗余的副本，不改 ID 或伪造数量。仅补充材料保留附录。新渲染不再自动追加全部结构化证据。
+
+体量 JSON 必须有 `page_count_scope: main_body_only_v1`，并分别报告 `body_pages`、`appendix_pages` 和 `appendix_start_page`。旧版含附录的 PASS 不可沿用，旧 DOCX 从审核后的 Markdown 重新生成。页数/可见字符目标只针对主文档正文，必要的正文表图正常计入页数，附录不补正文差额。总页数达标不表示正文达标，正文达标也不代替内容质量审阅。
